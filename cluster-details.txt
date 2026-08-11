@@ -1,0 +1,4 @@
+https://console-openshift-console.apps.sno.ocp.skillonclick.com/
+
+Username: kubeadmin
+Password: 35xCk-QUpz3-Q6mWk-gYDL6
