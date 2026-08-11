@@ -1,0 +1,153 @@
+Here is a clear, structured, workshop‑ready explanation of Deploying Applications with BuildConfig and DeploymentConfig in OpenShift — perfect for your Day 1 training material and hands‑on labs.
+
+⭐ Deploying Applications with BuildConfig and DeploymentConfig in OpenShift
+OpenShift provides a full application lifecycle:
+Build → Image → Deploy → Scale → Route → Monitor
+
+Two key OpenShift-specific objects enable this lifecycle:
+
+BuildConfig (BC) — how to build the application image
+
+DeploymentConfig (DC) — how to deploy and manage the running application
+
+Together, they automate the entire workflow from source code to running pods.
+
+🧩 1. BuildConfig — Building Application Images
+A BuildConfig defines:
+
+Where the source code comes from (Git repo, binary, Dockerfile)
+
+How the image should be built (S2I, Docker, Custom, Jenkins pipeline)
+
+When the build should run (webhooks, image triggers, manual)
+
+Where the built image should be stored (ImageStreamTag)
+
+🎯 Why BuildConfig is important
+Automates image creation
+
+Integrates with Git (webhooks)
+
+Rebuilds automatically when base images change
+
+Works seamlessly with ImageStreams
+
+Enables developer self-service builds
+
+🔧 Common Build Strategies
+S2I (Source-to-Image) — injects source code into a builder image
+
+Docker Strategy — uses a Dockerfile
+
+Custom Strategy — custom builder image
+
+Pipeline Strategy — Jenkinsfile-based CI/CD
+
+📦 Example BuildConfig workflow
+Developer pushes code to Git
+
+BuildConfig triggers a new build
+
+OpenShift builds the image
+
+Image is stored in an ImageStream
+
+DeploymentConfig automatically redeploys the new version
+
+🧩 2. DeploymentConfig — Deploying and Managing Pods
+A DeploymentConfig defines:
+
+How many replicas (pods) should run
+
+Which image to deploy (from ImageStreamTag)
+
+How updates should be rolled out (rolling, recreate)
+
+Triggers for redeployment (image change, config change)
+
+Environment variables, volumes, probes, labels
+
+🎯 Why DeploymentConfig is important
+Automates deployment when new images are built
+
+Provides rollout strategies
+
+Supports hooks (pre/post deployment)
+
+Integrates tightly with ImageStreams
+
+Enables controlled, repeatable deployments
+
+🔁 Rollout Strategies
+Rolling — gradually replace old pods
+
+Recreate — stop old pods, then start new ones
+
+Custom hooks — run scripts before/after deployment
+
+🔧 Common commands
+Code
+oc rollout status dc/myapp
+oc rollout latest dc/myapp
+oc get dc
+🔗 3. How BuildConfig and DeploymentConfig Work Together
+This is the classic OpenShift workflow:
+
+Code
+Source Code → BuildConfig → ImageStream → DeploymentConfig → Pods → Service → Route
+Step-by-step
+BuildConfig builds the image
+
+Image is pushed to an ImageStreamTag
+
+DeploymentConfig watches the ImageStream
+
+When a new image appears → automatic redeployment
+
+Pods are created
+
+A Service exposes the pods internally
+
+A Route exposes the service externally
+
+This is OpenShift’s end-to-end CI/CD pipeline without external tools.
+
+🧪 4. Example: Deploying an App Using BC + DC
+Step 1: Create a BuildConfig
+Code
+oc new-build https://github.com/sclorg/nodejs-ex.git --name=nodejs-ex
+Step 2: Trigger a build
+Code
+oc start-build nodejs-ex
+Step 3: Create a DeploymentConfig
+Code
+oc new-app nodejs-ex
+This automatically creates:
+
+DeploymentConfig
+
+Service
+
+ImageStream
+
+Step 4: Expose the application
+Code
+oc expose svc/nodejs-ex
+Step 5: Access the route
+Code
+oc get routes
+🧠 5. BuildConfig vs DeploymentConfig (Workshop Summary)
+
+Feature		BuildConfig			DeploymentConfig
+Purpose		Build container images		Deploy and manage pods
+Input		Source code, Dockerfile		ImageStreamTag
+Output		ImageStream			Running pods
+Triggers	Git, image, manual		Image change, config change
+Strategy	S2I, Docker, Custom, Pipeline	Rolling, Recreate
+Role		CI (build)			CD (deploy)
+
+
+🎯 Trainer’s Closing Line
+BuildConfig creates the application image.
+DeploymentConfig runs the application in the cluster.
+Together, they form OpenShift’s built-in CI/CD pipeline.

@@ -1,0 +1,187 @@
+Here is a clear, structured, workshop‑ready explanation of Working with the oc CLI and the OpenShift Web Console — perfect for Day 1 training and aligned with RHLS curriculum and your bootcamp flow.
+
+⭐ Working with oc CLI and the Web Console in OpenShift
+OpenShift provides two primary interfaces for interacting with the platform:
+
+Web Console — visual, user-friendly, great for developers and beginners
+
+oc CLI — powerful command-line tool for automation, scripting, and advanced operations
+
+Both interfaces talk to the same OpenShift API, but each is suited for different tasks.
+
+🖥️ 1. OpenShift Web Console — Visual, Developer-Friendly Interface
+The Web Console is designed for ease of use, especially for developers, testers, and workshop attendees.
+
+🎯 Key Features
+Developer Perspective
+
+Topology view
+
+Builds & Pipelines
+
+Monitoring dashboards
+
+Event logs
+
+Resource creation wizards
+
+Administrator Perspective
+
+Cluster Operators
+
+Nodes & MachineSets
+
+Networking
+
+Storage
+
+User management
+
+Workload management
+
+🧭 Developer Perspective Highlights
+Topology View
+Visual map of:
+
+Pods
+
+Deployments
+
+Services
+
+Routes
+
+Build pipelines
+
+Attendees can see their application come alive as soon as they deploy it.
+
+Builds & Pipelines
+Trigger S2I builds
+
+View build logs
+
+Monitor pipeline runs
+
+Inspect image streams
+
+Monitoring
+CPU, memory, network usage
+
+Pod restarts
+
+Alerts
+
+Metrics dashboards
+
+Resource Creation
+You can create:
+
+Deployments
+
+Services
+
+Routes
+
+Secrets
+
+ConfigMaps
+
+BuildConfigs
+
+All through guided forms.
+
+🧰 2. oc CLI — Powerful, Scriptable, Automation-Friendly
+The oc CLI is the command-line interface for OpenShift.
+It extends kubectl with OpenShift-specific capabilities.
+
+🎯 Why oc CLI is important
+Automation
+
+CI/CD pipelines
+
+Scripting
+
+Troubleshooting
+
+Bulk operations
+
+Access to advanced features not exposed in the UI
+
+🔐 Logging In
+Code
+oc login <cluster-url>
+📁 Working with Projects
+Code
+oc new-project demo
+oc project demo
+oc get projects
+🚀 Deploying Applications
+Using S2I:
+Code
+oc new-app https://github.com/sclorg/nodejs-ex.git
+Using an image:
+Code
+oc new-app quay.io/openshiftlabs/workshop-dashboard
+🔗 Exposing Services
+Code
+oc expose svc/workshop-dashboard
+oc get routes
+📦 Inspecting Resources
+Code
+oc get pods
+oc get svc
+oc get dc
+oc get is
+oc get bc
+🔍 Troubleshooting
+Code
+oc logs <pod-name>
+oc describe pod <pod-name>
+oc get events --sort-by=.metadata.creationTimestamp
+🛠️ Editing Resources
+Code
+oc edit dc/myapp
+oc edit bc/myapp
+📜 Applying YAML
+Code
+oc apply -f deployment.yaml
+🔗 3. How Web Console and oc CLI Work Together
+Task				Web Console	oc CLI
+Visualizing topology		✔️		❌
+Quick deployments		✔️		✔️
+Advanced automation		❌		✔️
+Editing YAML			✔️		✔️
+Troubleshooting logs		✔️		✔️
+Managing cluster operators	✔️		❌
+Scripting & CI/CD		❌		✔️
+
+
+Trainer explanation
+The Web Console is great for learning and visualizing.
+The oc CLI is essential for automation, DevOps, and real-world operations.
+
+🧠 4. Typical Workflow for Workshop Attendees
+Step 1: Log in to Web Console
+Explore Developer Perspective → Topology → Builds → Monitoring.
+
+Step 2: Log in using oc CLI
+Code
+oc login <sandbox-url>
+Step 3: Create a Project
+Code
+oc new-project day1-lab
+Step 4: Deploy an App
+Code
+oc new-app quay.io/openshiftlabs/workshop-dashboard
+Step 5: Expose It
+Code
+oc expose svc/workshop-dashboard
+Step 6: View It in Web Console
+Topology → Click the node → Open Route URL.
+
+This dual approach helps attendees understand both visual and command-line workflows.
+
+🎯 Trainer’s Closing Line
+The Web Console helps you see OpenShift.
+The oc CLI helps you control OpenShift.
+Mastering both gives you the full power of the platform.
