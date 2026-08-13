@@ -1,0 +1,60 @@
+PREPARATION FOR CONTINUED LEARNING AND ADVANCED SKILLS
+
+Workshop objective
+You should be able to turn the first five days of learning into a focused development plan, choose an advanced topic based on an operational gap, and practise skills through safe, evidence-producing exercises.
+
+1. Learning continues through real operating questions
+
+Advanced skill is not memorising every OpenShift object. It is repeatedly asking: What is the intended state? What is observed? Which evidence changes the decision? What is the smallest safe action? How will recovery be proven and the lesson retained?
+
+2. Suggested learning pathways
+
+- Platform operations: cluster upgrades, Operators, nodes, storage, monitoring, capacity and incident management.
+- Application delivery: GitOps, progressive delivery, supply-chain security, Tekton/Pipelines, policy and provenance.
+- Security: RBAC, NetworkPolicy, Secrets, certificate lifecycle, image security, audit and compliance controls.
+- Reliability: SLOs, alert design, load testing, chaos/resilience exercises, backup/restore and disaster recovery.
+- Developer experience: templates, self-service projects, local tooling, golden paths, documentation and internal platforms.
+
+Choose a pathway that matches a real team need rather than chasing a broad certification list without hands-on application.
+
+3. Deliberate practice loop
+
+1. Pick one observable goal, such as diagnosing a Pending pod or safely rolling back a deployment.
+2. Build a sandbox exercise with a known success condition and no sensitive data.
+3. Perform it from CLI and Console.
+4. Capture commands, evidence, errors and recovery proof in a runbook.
+5. Ask a peer to repeat it using only the runbook.
+6. Improve the runbook, automation, or guardrail based on friction found.
+
+4. Real-world scenario: repeated image-pull incidents
+
+The on-call team has solved three `ImagePullBackOff` incidents by manually editing pull secrets. This is a signal to learn beyond the immediate command.
+
+Learning plan: trace image reference, registry authentication, service account linkage, secret rotation process, admission policy, and event messages. Build a sandbox reproduction with a non-sensitive test registry. Write a standard diagnostic runbook and establish ownership for credential rotation. The target outcome is not faster secret editing; it is preventing and safely diagnosing the recurring class of failure.
+
+5. Evidence portfolio
+
+Maintain a private, sanitised portfolio of work: a network-policy lab, an immutable deployment workflow, a monitoring runbook, a restore test report, a least-privilege RBAC design, and a post-incident improvement. Remove names, tokens, endpoints, customer data, and proprietary configuration. A portfolio should demonstrate reasoning and outcomes, not disclose an employer's environment.
+
+6. Staying current responsibly
+
+OpenShift, Kubernetes, Operators, APIs, and security guidance change. Use official product documentation, release notes, and your cluster's installed API/docs as authoritative sources for implementation. Test version-sensitive examples in a sandbox. Treat copied YAML and old tutorials as hypotheses to validate.
+
+7. 30-60-90 day plan
+
+First 30 days: repeat core labs; build one runbook; review one production alert and one deployment definition with a mentor.
+
+Days 31-60: automate one repeated evidence collection; complete a network/state/security lab; join an incident review and identify one prevention action.
+
+Days 61-90: lead a sandbox resilience or restore exercise; present a production-readiness design; choose one advanced pathway and agree a measurable next objective.
+
+Knowledge check
+
+- What makes a lab exercise deliberate practice rather than passive reading?
+- Why is a recurring manual incident fix a learning opportunity?
+- Which source should settle a version-dependent API question?
+- What should never appear in a learning portfolio?
+
+Summary
+
+The most valuable next skills are grounded in repeated operational needs. Practise safely, retain evidence, share improved runbooks, and validate every version-sensitive technique against the environment that will use it.

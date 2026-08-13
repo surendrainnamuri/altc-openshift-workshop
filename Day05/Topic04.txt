@@ -1,0 +1,72 @@
+REVIEWING REAL-WORLD USE CASES AND SCENARIOS
+
+Workshop objective
+You should be able to translate production requirements into platform design choices, identify assumptions in a proposed OpenShift architecture, and present an evidence-based recommendation with trade-offs and operational controls.
+
+1. A use case is a set of constraints
+
+Begin with users, data classification, traffic pattern, availability target, recovery objective, integration dependencies, compliance needs, team operating model, and change frequency. Avoid selecting a technology simply because it was used successfully elsewhere.
+
+2. Scenario A: online retailer checkout
+
+Requirements: burst traffic, payment-provider calls, order integrity, low latency, audit trail, and safe releases.
+
+Likely design themes: stateless API pods with autoscaling; external or operator-approved transactional database; idempotency keys for payment/order calls; immutable images; readiness probes that reflect dependency strategy; tight egress to payment provider; encrypted Routes; metrics for success/failure/latency; and rollback that avoids replaying charges.
+
+Key question: What happens when payment succeeds but the application times out before recording the result? The answer needs idempotency and reconciliation, not merely more replicas.
+
+3. Scenario B: regulated document portal
+
+Requirements: restricted uploads, long retention, auditability, virus scanning, legal holds, controlled sharing.
+
+Likely themes: object storage rather than pod filesystem; malware scanning workflow; least-privilege service identities; fine-grained access controls; encrypted transport/storage according to policy; retention/hold ownership; immutable evidence; and log handling that avoids document content or personal data.
+
+Key question: Which component owns retention and legal hold, and can restore/access actions be audited?
+
+4. Scenario C: event-driven inventory processing
+
+Requirements: variable message rate, at-least-once delivery, duplicate tolerance, visibility of backlog, predictable recovery.
+
+Likely themes: approved message broker; consumers designed idempotently; dead-letter/retry policy; queue age and consumer lag metrics; back-pressure; scaling based on meaningful backlog signals; and a runbook for poison messages.
+
+Key question: If a worker dies after its side effect but before acknowledgement, can the next attempt safely repeat it?
+
+5. Scenario D: internal analytics batch job
+
+Requirements: scheduled execution, large input/output, resource isolation, reproducible results, cost control.
+
+Likely themes: Jobs/CronJobs with explicit concurrency policy; object storage or data platform for inputs/outputs; bounded requests/limits; immutable job image; provenance; sensitive-data rules; and cleanup/retention of generated artifacts.
+
+Key question: What prevents two scheduled executions from processing the same input concurrently?
+
+6. Use-case review method
+
+For every scenario, present:
+
+1. Critical user journey and failure impact.
+2. State location, lifecycle, backup and restore test.
+3. Ingress/egress paths and NetworkPolicy needs.
+4. Deployment method, identity, immutable artifact evidence and rollback.
+5. Capacity assumptions, SLOs, dashboards, alerts and runbook.
+6. RBAC, Secret handling, audit, and ownership.
+7. Explicit risks, unknowns, and validation experiment.
+
+7. Anti-patterns to challenge
+
+- "Add replicas" when the bottleneck is a serial database lock or external API limit.
+- Shared writable filesystem used as a database without support.
+- Public Route for an admin endpoint because authentication is difficult.
+- Cluster-admin granted to deployment tooling for convenience.
+- `latest` image tag as release evidence.
+- Metrics without owner, threshold rationale, or response procedure.
+
+Knowledge check
+
+- Why does a payment workflow need idempotency even with reliable pods?
+- Which storage type suits long-lived document uploads better than a container filesystem?
+- What does queue lag tell an event-processing team?
+- Which five artefacts would you request before approving a production design?
+
+Summary
+
+Real-world architecture starts with the failure modes and operating obligations of a user journey. Platform components are valuable when their limits, ownership, and evidence paths are part of the design.

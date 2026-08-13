@@ -1,0 +1,115 @@
+REFLECTION & REVIEW - CAPSTONE PROJECT PRESENTATIONS
+
+Purpose
+
+This capstone brings the Day01-Day05 learning into one production-readiness proposal. Teams present a realistic application or service design, defend its operational choices, respond to an incident, and identify the next validation step. The goal is evidence-based reasoning, not a perfect architecture diagram.
+
+Recommended duration: 90-120 minutes
+Suggested format: teams of two to four; 10 minutes presentation, 5 minutes questions per team
+
+======================================================================
+PART 1 - CAPSTONE BRIEF
+======================================================================
+
+Choose one scenario or an approved real service with all sensitive information removed:
+
+A. Online retailer checkout API with payment integration.
+B. Regulated document upload and retrieval portal.
+C. Event-driven inventory update service.
+D. Internal analytics batch-processing service.
+
+Your design must describe:
+
+1. User journey, service objective, failure impact, and one measurable SLO.
+2. Workloads, Services, Routes, ingress TLS decision, and inbound/outbound traffic paths.
+3. State classification, storage choice, backup/restore method, RPO and RTO.
+4. Deployment automation source of truth, image-digest evidence, promotion and rollback approach.
+5. RBAC identities for humans, CI, and deployment automation.
+6. NetworkPolicy intent and dependencies including DNS/essential egress.
+7. Resource requests/limits, scaling assumptions, dashboard/alert signals, and a runbook entry.
+8. Developer design considerations: probes, arbitrary UID, configuration, Secret handling, retries/idempotency, graceful shutdown.
+
+======================================================================
+PART 2 - REQUIRED ARTEFACTS
+======================================================================
+
+Prepare these concise artefacts:
+
+- One architecture diagram showing client -> Route -> Service -> workload -> state/dependencies.
+- One deployment or Template/GitOps excerpt, with secrets removed.
+- One NetworkPolicy or traffic matrix.
+- One metrics/logs/events incident evidence panel or mock evidence table.
+- One RBAC access matrix for observer, CI, deployment identity, and on-call responder.
+- One backup/restore or failure-recovery sequence.
+
+Label every assumption. A diagram is useful only when components, directions, trust boundaries, and ownership are clear.
+
+======================================================================
+PART 3 - PRESENTATION FLOW
+======================================================================
+
+1. Explain the user journey and failure impact.
+2. Show the state and traffic design.
+3. Explain how an immutable artifact moves to production.
+4. Explain access and network boundaries.
+5. Demonstrate how the team would detect and investigate one failure.
+6. State one trade-off, one unknown, and the next validation experiment.
+
+======================================================================
+PART 4 - INCIDENT CARD
+======================================================================
+
+At the end of the presentation, the facilitator selects one card. Respond using: symptom, evidence, hypothesis, one safe action, recovery proof, and prevention.
+
+Card A: Pods are Ready but the public Route returns 503 after a NetworkPolicy rollout.
+Card B: A worker processes the same message twice after a timeout and restart.
+Card C: A release uses a new image that is unavailable after an old PVC is mounted.
+Card D: CPU usage is high, latency is rising, and the HPA has stopped scaling due to quota.
+Card E: A contractor asks for cluster-admin because they cannot see production logs.
+Card F: A database backup exists but the team has never restored it.
+
+======================================================================
+PART 5 - PEER REVIEW RUBRIC
+======================================================================
+
+Score each area 1 (missing), 2 (partially defined), or 3 (clear, feasible, evidence-based):
+
+- User impact and service objective
+- State/storage/recovery design
+- Route, TLS, Service and NetworkPolicy design
+- Deployment automation and immutable provenance
+- Resource, scale, metrics, logs and events plan
+- RBAC and Secret handling
+- Developer runtime/design readiness
+- Incident response and recovery proof
+- Assumptions, trade-offs and validation plan
+
+Give one concrete strength and one actionable improvement. Do not recommend broader permissions, disabled security controls, or untested data changes as default fixes.
+
+======================================================================
+PART 6 - FACILITATOR QUESTIONS
+======================================================================
+
+- What fails when this pod is replaced? What remains durable?
+- Which Route/TLS choice fits the data and certificate ownership model?
+- Which exact NetworkPolicy dependency would break first if you introduced default deny?
+- How do you prove the production image is the tested image?
+- Which identity can deploy, and why is it separate from CI and humans?
+- What does your readiness probe mean operationally?
+- How do you restore data, and when was that last demonstrated?
+- What metric tells you a user is affected before a node is full?
+- Which design assumption has the highest production risk?
+
+======================================================================
+PART 7 - FINAL REFLECTION
+======================================================================
+
+Write three sentences:
+
+1. The strongest readiness control in our design is __________________.
+2. The production risk we must validate next is ______________________.
+3. The operational practice we will adopt is ________________________.
+
+Summary
+
+Production readiness is the ability to operate safely through normal change and abnormal failure. A strong design makes state, traffic, identity, observability, recovery, and ownership explicit—and proves its important assumptions before customers are affected.

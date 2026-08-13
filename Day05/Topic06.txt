@@ -1,0 +1,67 @@
+APPLICATION DESIGN CONSIDERATIONS FOR DEVELOPERS
+
+Workshop objective
+You should be able to design an application that behaves predictably on OpenShift, exposes meaningful health and observability signals, manages state and configuration safely, and supports safe rollout, scaling, and recovery.
+
+1. Design for replacement, not a permanent machine
+
+Instances can start, stop, move, and run concurrently. Avoid local durable state, fixed hostnames, assumptions about a single replica, and in-memory session ownership unless the feature accepts loss. Make requests idempotent where retries can occur. Store durable state in an appropriate external service and use stable service discovery rather than pod IPs.
+
+2. Startup, readiness, liveness, and shutdown
+
+Startup probes protect slow-starting applications from premature liveness failure. Readiness should mean the instance can safely receive the traffic it is designed to serve. Liveness detects a process that needs restart, not a temporarily slow external dependency. On termination, stop accepting new work, finish/hand off safe in-flight work within the grace period, and close connections cleanly.
+
+Do not make readiness depend on every noncritical downstream service if doing so turns a partial dependency outage into total unavailability. Document the chosen degradation behaviour.
+
+3. Configuration and credentials
+
+Put non-sensitive, environment-specific configuration in controlled configuration mechanisms; inject Secrets through approved patterns. Validate configuration at startup without printing secret values. Support credential rotation and avoid embedding endpoints/tokens in source, images, CLI arguments, labels, or logs.
+
+4. Container and OpenShift compatibility
+
+Run as non-root and tolerate arbitrary UIDs. Ensure writable directories have appropriate permissions. Use a small, supported base image, pin/build traceable dependencies, expose the required port explicitly, and avoid package installation at container startup. Define CPU/memory requests and limits based on measurement.
+
+5. Observability as an interface
+
+Emit structured, useful logs with safe correlation IDs. Export metrics that describe requests, errors, latency, queues, and critical business outcomes. Use distributed tracing where supported and appropriate. Never place secrets, raw personal data, unbounded identifiers, or high-cardinality request values in logs, labels, or metrics.
+
+6. Real-time scenario: retry duplicates orders
+
+The client times out while submitting an order, retries, and two workers process the request. Both replicas behave correctly from their local viewpoint, but the system creates duplicate orders.
+
+Design response:
+
+1. Require an idempotency key from the caller or generate a controlled request identity.
+2. Persist the key and outcome transactionally in the durable system of record.
+3. Return the original result for a legitimate retry.
+4. Make downstream payment/message actions idempotent or reconciled.
+5. Instrument duplicate/retry outcomes and test network-timeout cases.
+
+Scaling cannot correct an undefined business-operation contract.
+
+7. Delivery and backward compatibility
+
+Deploy immutable image digests. Use rolling updates only when versions can coexist. Make database migrations backward-compatible, expand/contract in stages, and ensure rollback does not require restoring incompatible data. Feature flags need ownership, expiry, audit, and safe defaults; they are not a substitute for release discipline.
+
+8. Developer production-readiness checklist
+
+- Stateless instance behaviour or documented state ownership.
+- Readiness, liveness, startup, and graceful shutdown semantics tested.
+- Non-root arbitrary-UID compatibility verified.
+- Resource sizing measured and limits declared.
+- Configuration/Secrets externalised and rotation considered.
+- Safe logs, metrics, traces, alerts, and runbook links.
+- Retry/idempotency and concurrency behaviour tested.
+- Route/TLS and inbound/outbound dependencies identified.
+- Immutable deployment, migration, rollout, rollback and restore plan reviewed.
+
+Knowledge check
+
+- Why should liveness not simply test every downstream dependency?
+- What is an idempotency key protecting against?
+- Which image property makes arbitrary-UID OpenShift execution possible?
+- Why are compatible database migrations important for rolling updates?
+
+Summary
+
+Production-ready application design makes operational behaviour intentional. Design for replacement, safe concurrency, observable failure, controlled configuration, and release paths that preserve both service and data integrity.

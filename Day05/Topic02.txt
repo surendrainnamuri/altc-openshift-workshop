@@ -1,0 +1,72 @@
+CONFIGURING ADVANCED ROUTES AND NETWORK POLICIES
+
+Workshop objective
+You should be able to explain how OpenShift Routes expose services, recognise TLS and routing choices, apply least-privilege network boundaries, and troubleshoot connectivity without weakening security controls.
+
+1. Exposure path
+
+Client -> Route -> OpenShift ingress/router -> Service -> EndpointSlice -> ready pod
+
+A Route maps an externally reachable host/path to a Service. The Service selects pods; EndpointSlices record eligible endpoints. A Route being admitted does not prove the Service has endpoints, the pod is Ready, the app answers correctly, or a NetworkPolicy permits traffic.
+
+Inspect the chain:
+
+oc get route,service,endpointslice
+oc describe route/<route-name>
+oc get endpointslice -l kubernetes.io/service-name=<service-name>
+oc get pods --show-labels
+
+2. Route choices require intent
+
+Routes can use hostnames, paths, target ports, weights, and TLS termination. Common TLS termination styles are edge (router terminates TLS), passthrough (TLS continues to the workload), and re-encrypt (router terminates then establishes TLS to the backend). The appropriate option depends on certificate ownership, backend encryption needs, observability, compliance, and application support.
+
+Use approved DNS and certificates. Do not disable TLS verification, accept arbitrary hostnames, or expose an internal admin endpoint simply to make testing easier. Redirect insecure HTTP where policy requires it.
+
+3. NetworkPolicy is an allow-list boundary
+
+Without applicable policies, pod-to-pod traffic may be broadly allowed. A NetworkPolicy selects pods and defines allowed ingress and/or egress. Once a pod is selected by an ingress policy, only listed ingress paths are allowed; similarly for egress. Behaviour also relies on the cluster network plugin supporting enforcement.
+
+Policies use labels, namespaces, pods, IP blocks, and ports. Label changes change security posture, so labels must be governed like API access.
+
+4. Start with observed dependencies
+
+For each workload, list inbound callers and outbound dependencies: DNS, identity, database, message broker, payment gateway, metrics/logging endpoints, and external APIs. Then define the narrowest viable rules and test them. A "deny all" policy introduced without DNS/essential egress consideration is a common self-inflicted outage.
+
+5. Real-time scenario: API becomes unreachable after policy rollout
+
+`catalog-api` pods are Ready. The Route returns 503 just after a NetworkPolicy change. First, trace the path:
+
+1. Confirm the Route targets the expected Service and port.
+2. Confirm Service selectors match Ready pod labels and EndpointSlices contain endpoints.
+3. Inspect NetworkPolicies selecting the backend pods and the router/namespace traffic allowed by them.
+4. Check relevant events and application logs; do not infer the cause from a 503 alone.
+5. Compare the policy diff with the last known working revision.
+6. Apply the smallest reviewed policy correction, such as permitting ingress from the required router namespace/selector on the named application port.
+7. Validate route response, internal call, and that unrelated traffic remains denied.
+
+Do not remove every policy as a troubleshooting shortcut. That converts a contained outage into an unreviewed exposure change.
+
+6. Egress discipline
+
+Egress policy prevents unexpected outbound paths and helps contain compromised workloads. Allow required DNS resolution and explicit destinations/ports. IP-based external rules need lifecycle ownership because provider addresses change; DNS names are not universally expressible in base NetworkPolicy. Use organisation-approved egress gateways or policy products when domain-aware controls are required.
+
+7. Advanced-route review checklist
+
+- Hostname and ownership are approved.
+- Service name and target port are explicit and tested.
+- TLS termination and certificates match data sensitivity.
+- Redirect and insecure traffic behaviour are intentional.
+- Health/readiness endpoints do not disclose sensitive detail.
+- Route, Service, selector, endpoints, and NetworkPolicy labels remain aligned.
+- Canary/weighted routing has rollback criteria and observable success metrics.
+
+Knowledge check
+
+- What components sit between a Route and an application container?
+- Which question decides edge vs passthrough vs re-encrypt TLS?
+- What happens when an ingress policy selects a pod?
+- Why can an intended deny-all policy block DNS or ingress unexpectedly?
+
+Summary
+
+Routes and NetworkPolicies are production interfaces and security boundaries. Design them from real traffic dependencies, validate every hop, and correct failures narrowly with evidence.

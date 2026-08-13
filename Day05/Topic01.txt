@@ -1,0 +1,77 @@
+PERSISTENT STORAGE AND APPLICATION STATE MANAGEMENT
+
+Workshop objective
+By the end of this topic, you should be able to classify application state, select an appropriate OpenShift/Kubernetes storage pattern, inspect PVC lifecycle and failure evidence, and design stateful workloads for recovery rather than assuming pods are durable.
+
+1. Pods are disposable; state needs an explicit home
+
+A pod can be recreated during rollout, rescheduling, node maintenance, or failure. Its writable container filesystem is therefore not a reliable place for business data. Separate:
+
+- Ephemeral state: caches, temporary files, generated assets that can be recreated.
+- Persistent application state: database files, uploads, messages, reports, user content.
+- Configuration and credentials: ConfigMaps, Secrets, or external managed systems; these are not general data stores.
+- External durable services: managed databases, object stores, queues, and registries.
+
+The key question is not "can I mount a volume?" It is "what are the consistency, availability, backup, security, throughput, and recovery requirements of this data?"
+
+2. Core objects
+
+PersistentVolume (PV) represents storage supplied to the cluster. PersistentVolumeClaim (PVC) requests storage in a project. A StorageClass describes provisioning behaviour. A pod mounts a PVC through a volume. In many clusters, dynamic provisioning creates a PV when an eligible PVC is requested.
+
+Inspect rather than assume a storage class supports the access mode, expansion, snapshots, reclaim behaviour, encryption, or performance tier your application needs:
+
+oc get storageclass
+oc get pvc,pv
+oc describe pvc/<claim-name>
+oc get events --sort-by=.lastTimestamp
+
+3. Access modes and binding are not guarantees
+
+Common access modes include ReadWriteOnce (one node at a time), ReadOnlyMany, and ReadWriteMany. Their practical behaviour depends on the storage provider. Do not infer multi-pod, multi-node write safety from a familiar acronym. Test the supported topology and understand the filesystem/database's locking model.
+
+`WaitForFirstConsumer` volume binding can delay provisioning until scheduling selects a suitable topology. This is often correct, not a failure. Read PVC and pod events before changing a claim.
+
+4. Stateful workload patterns
+
+Use a Deployment for stateless services that consume external state. Use a StatefulSet only when stable ordinal identity, ordered behaviour, or per-replica persistent storage is genuinely required. A StatefulSet does not turn an unsafe database into a highly available database; clustering, replication, backups, failover, and operator/vendor guidance still matter.
+
+Avoid two replicas writing a single filesystem volume unless the application and storage explicitly support it. For production databases, prefer an approved managed service or operator-supported design over a hand-built database deployment.
+
+5. Live scenario: checkout data is lost after a rollout
+
+An engineer stores order drafts at `/app/data` inside a container. After a new image is deployed, earlier drafts disappear. The pod was recreated correctly; the design placed durable state in an ephemeral layer.
+
+Evidence-first correction:
+
+1. Confirm the Deployment revision and old/new pod lifecycle.
+2. Establish which data is truly required, its retention rule, and whether any recovery source exists.
+3. Move durable state to an approved database or object store; do not blindly mount a block volume as a shared application database.
+4. Treat data migration as a separately reviewed, backup-tested change.
+5. Test pod replacement, rollout, restore, and permission behaviour in a sandbox.
+6. Record recovery point objective (RPO) and recovery time objective (RTO).
+
+6. Security and ownership
+
+Persistent data must be protected by RBAC, storage controls, encryption, backup access controls, and retention policy. Images must tolerate OpenShift's arbitrary non-root UID. Do not fix a permissions problem by broadly running as root. Use the storage provider's supported ownership model and test read/write permissions under the actual security constraints.
+
+7. Backup and recovery are a product capability
+
+A snapshot or backup job is useful only if it is complete, protected, retained, and restore-tested. Define who may restore, where restoration occurs, how data integrity is verified, and how the service returns to use. Backups must not be the sole copy in the same failure domain as primary storage.
+
+8. Troubleshooting flow
+
+PVC Pending: inspect StorageClass, events, quota, selector, capacity, and topology.
+Pod Pending with a PVC: inspect both pod and claim events; mounting cannot begin until binding and scheduling requirements are met.
+Mount permission failure: inspect pod security context, filesystem ownership, CSI/provider expectations, and application path.
+Slow application: distinguish volume latency/throughput from application locks, database queries, network, and CPU contention.
+
+Knowledge check
+
+- Why is a container filesystem unsuitable for durable order data?
+- What relationship exists between a PVC, PV, and StorageClass?
+- Why is a StatefulSet not by itself a database HA strategy?
+- What proves a backup is usable?
+
+Summary
+
+Persistent storage is a data-management decision, not just a YAML field. Make state explicit, use approved storage patterns, protect it, and prove recovery before relying on it in production.

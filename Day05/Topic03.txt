@@ -1,0 +1,63 @@
+BEST PRACTICES FOR LOCAL CLUSTER SETUP
+
+Workshop objective
+You should be able to set up or evaluate a local OpenShift/Kubernetes learning environment safely, select a realistic workflow for its purpose, and keep local convenience from becoming a source of credential, configuration, or production-parity risk.
+
+1. Define the goal first
+
+Use a local cluster for learning APIs, validating manifests, testing images, and rapid experiments. It is not a substitute for an organisation-managed production cluster. State the goal: tutorial, unit/integration test, platform feature experiment, or pre-sandbox smoke test. This decides the required version, resources, networking, data, and cleanup policy.
+
+2. Options and trade-offs
+
+OpenShift Local is useful for a single-node OpenShift learning environment where supported. A managed shared development cluster better represents organisation policies and integrations. Lightweight Kubernetes distributions can support generic manifest learning but may not reproduce OpenShift Routes, SCCs, Operators, ingress, or monitoring.
+
+Select a supported release and check hardware, virtualisation, disk, and network requirements from official product documentation before installation. Do not expose a local control plane to the internet or disable endpoint protection merely to avoid a setup issue.
+
+3. Local setup guardrails
+
+- Use a dedicated local context and verify it before commands: `oc whoami --show-server` and `oc project`.
+- Keep production and personal kubeconfig contexts visibly distinct.
+- Use synthetic development data and development-only credentials.
+- Keep images, manifests, and tool versions versioned; document prerequisites.
+- Allocate adequate CPU, memory, and disk before diagnosing false application failures.
+- Apply updates through supported tooling and take backups/exported configuration before substantial experiments.
+- Delete temporary projects and credentials when the exercise ends.
+
+4. Reproduce the constraints that matter
+
+Test images as non-root. Declare requests/limits. Use real readiness/liveness probes. Ensure writable paths work with arbitrary UIDs. Build and deploy immutable images. These checks are more valuable than making a laptop cluster perfectly resemble production in every detail.
+
+5. Real-world scenario: works locally, fails in shared test
+
+A developer's local cluster allows an image that runs as root and uses a host-mounted path. In shared OpenShift test, admission rejects the pod and the volume design is unavailable.
+
+Correct response:
+
+1. Read the admission/event message in test.
+2. Identify the production-relevant constraint: arbitrary UID, restricted policy, unsupported volume, or missing RBAC.
+3. Update the image/manifests to meet the supported platform model.
+4. Add a local preflight test that catches the same issue where practical.
+5. Do not request broad exceptions merely to preserve an unportable development shortcut.
+
+6. Networking and integration
+
+Local DNS, Routes, ingress certificates, service mesh, corporate proxies, and VPNs can differ greatly. Treat port-forwarding as temporary authorised access, not an architectural integration pattern. Do not connect local tools to production databases or copy production Secrets into a laptop environment. Use documented sandbox services, test tenants, or mocks.
+
+7. Local-cluster operational checklist
+
+Before starting: supported version, virtualisation enabled, capacity available, approved source/image registries, dev-only data, documented cleanup.
+
+During use: correct context, least-privilege login, known image source, version-controlled manifests, no sensitive data in logs.
+
+After use: stop/remove temporary workloads, revoke temporary tokens, clear test data according to policy, and record issues that should become CI checks.
+
+Knowledge check
+
+- Which local-cluster property is most important to reproduce for OpenShift images?
+- Why should local and production kubeconfig contexts be visibly different?
+- What makes port-forward unsuitable as a permanent integration design?
+- When should a local limitation be addressed in CI rather than by a production exception?
+
+Summary
+
+Use local clusters to learn and shorten feedback loops, while validating production-relevant constraints in shared controlled environments. Security, context awareness, and reproducibility matter as much as installation success.
