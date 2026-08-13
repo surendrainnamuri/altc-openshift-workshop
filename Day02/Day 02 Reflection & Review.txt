@@ -1,0 +1,405 @@
+REFLECTION & REVIEW — PRACTICE SESSION: DEPLOY AND TROUBLESHOOT
+
+Session purpose
+This practice session combines the Day02 skills into one realistic workflow. Attendees deploy an application from Git, inspect its S2I build, expose it, add health checks, scale it, diagnose introduced faults, and explain their evidence.
+
+Recommended duration: 75–100 minutes
+Suggested format: Pairs or teams of three
+Roles: Driver (runs commands), Navigator (checks reasoning), Observer/Scribe (records evidence). Rotate roles after each scenario.
+
+Learning outcomes
+
+By the end, attendees should be able to:
+
+- Trace an application from Git source to BuildConfig, Build, image, Deployment, pod, Service, and Route.
+- Validate a deployment using both the oc CLI and Web Console.
+- Configure readiness and liveness probes appropriately.
+- Scale manually and explain how automatic scaling would behave.
+- Troubleshoot using evidence rather than trial and error.
+- Communicate a concise incident summary.
+
+LAB SAFETY AND SETUP
+
+Use only the assigned workshop project and approved repository/images. Do not display Secret values. Replace placeholders before running commands.
+
+Create or select a project:
+
+oc new-project day02-<team-name>
+
+If the project already exists:
+
+oc project day02-<team-name>
+
+Record baseline context:
+
+oc whoami
+oc project
+oc get resourcequota,limitrange
+
+PART 1 — DEPLOY FROM GIT
+
+Task
+
+1. Inspect the assigned Git repository.
+2. Identify the language runtime and application listening port.
+3. Search the cluster for a suitable builder image.
+4. Create an S2I application named practice-app.
+5. Follow the build logs until completion.
+6. Identify the BuildConfig, Build, ImageStream, Deployment, Service, and pod.
+
+Example command pattern:
+
+oc new-app <builder-image>~<git-url> --name=practice-app
+oc logs -f bc/practice-app
+oc get bc,build,is,deployment,pods,service
+
+Evidence to record
+
+- Build name and final status.
+- Git reference used.
+- Output ImageStreamTag.
+- Pod status and image digest.
+- One sentence explaining the difference between BuildConfig and Build.
+
+Checkpoint questions
+
+- Where did the builder image come from?
+- Which object tracks the output image?
+- If compilation failed, which log would be the first source of evidence?
+
+PART 2 — EXPOSE AND VERIFY
+
+Task
+
+1. Confirm that the Service selector matches the pod labels.
+2. Confirm the Service has endpoints.
+3. Create a Route.
+4. Access the application and record the HTTP response.
+
+Example commands:
+
+oc get pods --show-labels
+oc describe service practice-app
+oc get endpointslice -l kubernetes.io/service-name=practice-app
+oc expose service/practice-app
+oc get route practice-app
+
+Evidence to record
+
+- Service port and targetPort.
+- Number of ready endpoints.
+- Route hostname and TLS mode, if configured.
+- Successful response code or screenshot.
+
+PART 3 — ADD HEALTH CHECKS
+
+Task
+
+1. Identify suitable application health endpoints.
+2. Add a readiness probe.
+3. Add a liveness probe only if its endpoint represents local recoverability.
+4. Use a startup probe if the application has a slow start.
+5. Watch rollout and verify readiness.
+
+Inspect results:
+
+oc rollout status deployment/practice-app
+oc get pods
+oc describe pod <pod-name>
+
+Evidence to record
+
+- Probe type, path/port, period, timeout, and threshold.
+- Reason each probe is safe.
+- What action the platform takes when each probe fails.
+
+PART 4 — SCALE THE APPLICATION
+
+Manual exercise:
+
+oc scale deployment/practice-app --replicas=3
+oc get pods -l app=practice-app -w
+
+If labels differ, discover and use the correct selector.
+
+Validate that the Service includes the ready replicas. Then return to a safe lab baseline:
+
+oc scale deployment/practice-app --replicas=1
+
+Autoscaling design discussion
+
+Without necessarily creating an HPA, propose:
+
+- Minimum replicas.
+- Maximum replicas.
+- Target metric.
+- Required resource requests.
+- Expected scale-up time.
+- Risk to downstream services.
+
+If the cluster supports metrics and the trainer authorises it:
+
+oc autoscale deployment/practice-app --min=2 --max=5 --cpu-percent=70
+oc get hpa
+
+PART 5 — TROUBLESHOOTING SCENARIOS
+
+The trainer assigns at least two scenarios. Teams must not be told the cause. For every scenario, follow this structure:
+
+1. State the symptom.
+2. Capture current state.
+3. Inspect events and relevant logs.
+4. Form one hypothesis.
+5. Apply one correction.
+6. Prove recovery.
+7. State a preventive improvement.
+
+Scenario A: Route returns 503
+
+Possible trainer fault: Change the Service selector so it matches no pods, or configure the wrong target port.
+
+Expected investigation:
+
+oc describe route practice-app
+oc describe service practice-app
+oc get pods --show-labels
+oc get endpointslice -l kubernetes.io/service-name=practice-app
+
+Success criterion: Team identifies the broken link, restores endpoints, and demonstrates a successful request.
+
+Scenario B: Pod is Running but not Ready
+
+Possible trainer fault: Configure the readiness probe with an invalid path or port.
+
+Expected investigation:
+
+oc get pods
+oc describe pod <pod-name>
+oc logs <pod-name>
+
+Success criterion: Team distinguishes Running from Ready, corrects the probe, and confirms the endpoint returns to the Service.
+
+Scenario C: CrashLoopBackOff
+
+Possible trainer fault: Configure an invalid start command or omit a required non-secret environment variable.
+
+Expected investigation:
+
+oc describe pod <pod-name>
+oc logs <pod-name>
+oc logs <pod-name> --previous
+
+Success criterion: Team uses exit state and previous logs, fixes the configuration, and verifies a stable restart count.
+
+Scenario D: Build fails
+
+Possible trainer fault: Use a non-existent Git reference, incorrect context directory, or incompatible builder version.
+
+Expected investigation:
+
+oc get builds
+oc describe build/<build-name>
+oc logs build/<build-name>
+oc get bc/practice-app -o yaml
+
+Success criterion: Team separates build failure from runtime failure and completes a new successful build.
+
+Scenario E: Pods remain Pending after scale-up
+
+Possible trainer fault: Set unrealistic resource requests within the lab quota.
+
+Expected investigation:
+
+oc describe pod <pending-pod>
+oc get resourcequota
+oc get events --sort-by=.lastTimestamp
+
+Success criterion: Team cites scheduling evidence and proposes a safe resource or capacity correction.
+
+PART 6 — TEAM INCIDENT REPORT
+
+Each team presents a two-minute report using this format:
+
+Symptom:
+Impact:
+Affected resource(s):
+Key evidence:
+Root cause:
+Correction:
+Proof of recovery:
+Preventive action:
+
+The report should separate observation from interpretation. For example:
+
+Observation: The EndpointSlice had zero endpoints.
+Interpretation: The Service could not route traffic to a ready pod.
+Confirmed cause: The Service selector did not match the pod label.
+
+REFLECTION QUESTIONS
+
+Individual reflection
+
+1. Which command gave you the most useful evidence, and why?
+2. At what point did your team move from symptom to confirmed cause?
+3. Did you make any assumption that the evidence disproved?
+4. Which part of the source-to-route chain is now clearest to you?
+5. What would you automate or document before supporting this application in production?
+
+Group review
+
+- How is a build failure different from a deployment failure?
+- Why can a Running pod still be unavailable?
+- What is the relationship between readiness, Service endpoints, and Routes?
+- Why can scaling expose hidden state or dependency problems?
+- What evidence proves that a new Git commit reached the running pod?
+- When should the Web Console be preferred, and when is the CLI more effective?
+
+TRAINER ASSESSMENT RUBRIC
+
+Deployment and build trace — 0 to 3
+0: Unable to identify resources.
+1: Deploys with substantial guidance.
+2: Deploys and explains most resource relationships.
+3: Independently traces Git through build, image, rollout, and pod.
+
+Exposure and validation — 0 to 3
+0: Cannot expose the application.
+1: Creates resources but cannot validate the path.
+2: Validates Route and Service with minor gaps.
+3: Tests each network layer and explains ports, selectors, and endpoints.
+
+Health and scaling — 0 to 3
+0: Cannot explain probe or replica behaviour.
+1: Configures settings without explaining consequences.
+2: Configures and validates basic behaviour.
+3: Justifies probe design, resource requests, and scaling limits.
+
+Troubleshooting method — 0 to 3
+0: Makes random changes without evidence.
+1: Finds the issue with substantial hints.
+2: Uses relevant evidence and verifies recovery.
+3: Forms and tests a clear hypothesis, proves root cause, and proposes prevention.
+
+Suggested interpretation
+
+10–12: Ready to perform the workflow independently.
+7–9: Competent with a small number of areas to reinforce.
+4–6: Needs guided repetition.
+0–3: Revisit the core resource chain before progressing.
+
+CLEANUP
+
+Remove only resources created for this exercise and follow trainer instructions. If the entire project was created solely for the lab and deletion is authorised, the trainer may remove it. Otherwise, delete named lab resources individually and verify the remaining project contents.
+
+Final review statement
+
+A successful deployment is not merely a Running pod. The complete outcome is a reproducible build, a known image, a healthy rollout, correct service endpoints, secure exposure, suitable scaling, and evidence that users receive the intended application version.
+
+FACILITATOR DELIVERY NOTES FOR THE PRACTICE SESSION
+
+Recommended live allocation within the four-hour workshop: 35 minutes
+Extended standalone lab option: 75–100 minutes
+
+For the 35-minute version
+
+00:00–00:05 - Explain roles, success criteria, and evidence log.
+00:05–00:10 - Teams validate the pre-deployed application baseline.
+00:10–00:25 - Each team diagnoses one injected failure.
+00:25–00:31 - Teams verify recovery and prepare incident summary.
+00:31–00:35 - Two or three rapid reports and instructor synthesis.
+
+Use a pre-deployed application for the short format. Running a fresh build for every team may consume most of the exercise if image pulls or Git access are slow.
+
+Fault injection matrix
+
+Beginner group:
+
+- Wrong Service selector.
+- Wrong readiness path.
+- Missing non-secret environment variable.
+
+Intermediate group:
+
+- Incorrect Service targetPort.
+- Invalid Git branch or context directory.
+- Resource request causing Pending pods.
+- New image built but Deployment not updated.
+
+Advanced group:
+
+- Readiness depends on a deliberately unavailable dependency.
+- Route TLS mode does not match backend expectation.
+- HPA cannot calculate metrics because requests are absent.
+- Application displays old content because build context points to the wrong monorepo directory.
+
+Do not inject several faults into one team unless they are highly experienced. Multiple simultaneous failures make cause-and-effect harder to teach in a short session.
+
+Trainer observation checklist
+
+Look for whether teams:
+
+- Confirm the active project before acting.
+- Record the initial symptom accurately.
+- Inspect status and events before editing.
+- Choose logs from the correct container or previous instance.
+- Test Service endpoints before blaming the Route.
+- Make one change at a time.
+- Verify rollout, readiness, endpoints, and user response.
+- Avoid exposing Secret values.
+- Explain what the evidence proves.
+
+Hints ladder
+
+Give hints progressively rather than revealing the answer:
+
+Hint 1: Name the resource layer to inspect.
+Hint 2: Suggest the command or Web Console tab.
+Hint 3: Point to the relevant output field.
+Hint 4: Ask the participant to compare desired and observed values.
+Hint 5: Demonstrate the correction only after the team explains the cause.
+
+Debrief prompts
+
+- Which observation ruled out the most possibilities?
+- What was the first platform symptom, and what was merely a downstream effect?
+- Did the correction address the cause or only mitigate the symptom?
+- How would monitoring detect this earlier?
+- How would version-controlled configuration prevent or reveal the change?
+- What evidence would you attach to a support ticket or incident record?
+
+Model incident summary
+
+Symptom: The public Route returned HTTP 503 for all requests.
+Impact: Workshop users could not access practice-app for six minutes.
+Evidence: The Route was admitted, the Service existed, but its EndpointSlice contained no endpoints. Pods were Running and Ready. Pod label app=practice-app did not match Service selector app=practice-api.
+Root cause: The Service selector was changed to a label that no pod used.
+Correction: Restored selector app=practice-app from the version-controlled manifest.
+Proof: EndpointSlice repopulated with ready pod addresses and the Route returned HTTP 200 with the expected version.
+Prevention: Manage Service configuration through reviewed Git changes and alert on Services with zero ready endpoints.
+
+Final rapid review questions
+
+1. Which object defines how source is built?
+2. Which identifier most precisely proves the image a pod runs?
+3. What two things must align for a Service to find a pod?
+4. Which probe failure removes traffic without restarting the container?
+5. Why can HPA show unknown CPU utilisation?
+6. What is the first evidence source for an unscheduled Pending pod?
+
+Expected answers
+
+1. BuildConfig.
+2. Image digest/imageID.
+3. Service selector and pod labels, with readiness determining usable endpoints.
+4. Readiness.
+5. Metrics may be unavailable or CPU requests may be missing.
+6. Pod description and scheduling events.
+
+Closing reflection for attendees
+
+Complete these statements:
+
+- Before today, I thought...
+- The most useful relationship I learned is...
+- The next time an application fails, my first evidence-gathering action will be...
+- One change I would make to our current deployment practice is...

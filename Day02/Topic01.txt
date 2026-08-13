@@ -1,0 +1,252 @@
+INTRODUCTION TO SOURCE-TO-IMAGE (S2I) WORKFLOWS
+
+Workshop objective
+By the end of this topic, attendees should be able to explain the S2I workflow, identify the OpenShift resources involved, start and monitor an S2I build, and decide when S2I is preferable to a Dockerfile build.
+
+1. What is Source-to-Image?
+
+Source-to-Image (S2I) is a build method that turns application source code into a runnable container image. The developer supplies source code—normally from Git—and OpenShift combines it with a trusted builder image containing the language runtime and build tools.
+
+In simple terms:
+
+Source code + Builder image + S2I scripts = Runnable application image
+
+S2I is useful because developers can deploy applications without first becoming container-image experts. Platform teams can standardise runtimes, security updates, and build behaviour through approved builder images.
+
+2. The major components
+
+Source repository: Application code in Git, including dependency files such as package.json, requirements.txt, or pom.xml.
+
+Builder image: A container image containing a runtime, build tools, and S2I scripts. Examples include Node.js, Python, Java, and PHP builder images.
+
+BuildConfig: The OpenShift object that records the source, build strategy, triggers, and output image.
+
+Build: A single execution created from a BuildConfig. BuildConfig is the recipe; Build is one run of that recipe.
+
+ImageStream: An OpenShift object that tracks image versions by tags without forcing other resources to depend directly on registry URLs.
+
+Deployment: Runs the output image as one or more pods. Some older environments and courses may use DeploymentConfig; new applications normally use a Kubernetes Deployment unless a legacy OpenShift-specific feature is required.
+
+3. End-to-end workflow
+
+Developer pushes code to Git
+        |
+        v
+BuildConfig reads the source and builder image
+        |
+        v
+S2I assembles and builds the application
+        |
+        v
+Output image is pushed and tracked by an ImageStreamTag
+        |
+        v
+Deployment rolls out pods from the new image
+        |
+        v
+Service and Route make the application reachable
+
+During assembly, the source is copied into the builder image and its assemble script installs dependencies or compiles the application. At runtime, the run script starts the application process.
+
+4. Common S2I scripts
+
+assemble: Builds the application, installs dependencies, and places artifacts in the expected location.
+
+run: Defines how the finished application starts.
+
+save-artifacts: Optionally preserves reusable dependencies for incremental builds.
+
+usage: Optionally documents how to use the builder image.
+
+The scripts usually come from the builder image. Advanced teams can supply scripts in the source repository under .s2i/bin to customise behaviour, subject to organisational policy.
+
+5. Creating an S2I application
+
+First select the correct project:
+
+oc project day02-workshop
+
+Inspect available builder images:
+
+oc get imagestreams -n openshift
+oc new-app --search nodejs
+
+Create an application from Git with a builder image:
+
+oc new-app nodejs:20~https://github.com/<organisation>/<repository>.git --name=sample-app
+
+The exact builder tag depends on the images installed in the cluster. Never assume a runtime tag exists—search first.
+
+Inspect the generated resources:
+
+oc get buildconfig,builds,imagestream,deployment,pods,service
+oc describe bc/sample-app
+
+Follow the build logs:
+
+oc logs -f bc/sample-app
+
+Alternatively, identify the build and view it directly:
+
+oc get builds
+oc logs -f build/sample-app-1
+
+6. Build triggers
+
+ConfigChange trigger: Starts a build when the BuildConfig is first created or its build configuration changes.
+
+ImageChange trigger: Rebuilds when the referenced builder image changes. This can help applications inherit runtime and security updates after controlled validation.
+
+Webhook trigger: Allows a Git provider to notify OpenShift after a push. GitHub, GitLab, and generic webhook types may be available.
+
+Manual trigger: An operator or pipeline starts the build explicitly:
+
+oc start-build sample-app
+oc start-build sample-app --follow
+
+To rebuild from the latest source and stream logs:
+
+oc start-build sample-app --follow --wait
+
+7. S2I versus Dockerfile builds
+
+Use S2I when:
+
+- The application uses a supported language runtime.
+- Developers should focus on code rather than image construction.
+- The organisation wants centrally governed builder images.
+- A consistent, repeatable build convention is desirable.
+
+Use a Dockerfile/Containerfile build when:
+
+- The image needs unusual operating-system packages or multiple custom build stages.
+- Exact control of every image layer is required.
+- No suitable builder image exists.
+- The application has a specialised packaging or runtime model.
+
+S2I does not remove the need for secure software practices. Dependencies must still be pinned and scanned, secrets must not be committed, and builder images must come from trusted sources.
+
+8. Troubleshooting an S2I build
+
+Build remains Pending: Check events, quotas, node capacity, and whether the builder image can be pulled.
+
+Git clone fails: Verify the repository URL, branch, credentials, proxy, and CA trust.
+
+Dependency installation fails: Read build logs and verify dependency manifests, registry access, and supported runtime versions.
+
+Build succeeds but pod fails: The build and runtime stages are different. Check pod logs, environment variables, ports, probes, and the image start command.
+
+Useful commands:
+
+oc describe build/sample-app-1
+oc logs build/sample-app-1
+oc get events --sort-by=.lastTimestamp
+oc describe pod/<pod-name>
+
+9. Trainer demonstration
+
+1. Show the source repository and identify its runtime manifest.
+2. Search for the matching builder image.
+3. Run oc new-app with the builder and Git URL.
+4. Watch the build and explain each transition.
+5. Inspect the BuildConfig and ImageStream.
+6. Confirm that a pod is created from the output image.
+7. Make a small source change and trigger another build.
+8. Compare the new image tag and rollout.
+
+Knowledge check
+
+- What is the difference between a BuildConfig and a Build?
+- What does the builder image contribute?
+- Where is the output image tracked?
+- Which logs would you inspect if compilation fails?
+- When would a Dockerfile be a better choice?
+
+Trainer closing line
+
+S2I creates a governed bridge from source code to a runnable image. It gives developers a simple workflow while giving platform teams control over runtimes, repeatability, and security.
+
+EXTENDED FACILITATOR NOTES
+
+Recommended teaching time: 25 minutes
+Suggested balance: 10 minutes explanation, 8 minutes demonstration, 5 minutes participant activity, 2 minutes review.
+
+The story to tell
+
+Begin with a developer who has working application code but no Containerfile. The platform team wants secure, standardised runtime images and does not want every team inventing a different image build. S2I is the agreement between them: developers provide code and dependencies; platform teams provide a governed builder; OpenShift performs a traceable build.
+
+Clarify that S2I does not “run source code directly.” It produces a new immutable application image. That distinction matters because the resulting image can be scanned, promoted, rolled back, and identified by digest.
+
+Deep dive: builder image anatomy
+
+A useful builder image contains:
+
+- A supported language runtime.
+- Compile or dependency-management tools required during assembly.
+- S2I assemble and run scripts.
+- A known directory layout and safe file permissions.
+- Metadata describing supported usage.
+- A non-root-compatible runtime design for OpenShift security constraints.
+
+Explain the difference between build-time and runtime dependencies. A simple builder may contain both. A production image strategy may use layered or multi-stage techniques to reduce runtime size. S2I convenience should be balanced with image size, patch cadence, and software-supply-chain policy.
+
+Deep dive: BuildConfig fields to show
+
+Use oc get bc/sample-app -o yaml and highlight:
+
+- spec.source.git.uri and ref
+- spec.source.contextDir
+- spec.strategy.sourceStrategy.from
+- spec.output.to
+- spec.triggers
+- status.lastVersion
+
+Do not read the whole YAML aloud. Ask attendees which field answers a specific question.
+
+Demonstration narration
+
+Before creating the app, show that no Build or output tag exists. Start the build and watch its phases: New, Pending, Running, Complete or Failed. Explain that the build pod is temporary, while the Build record remains as history.
+
+After completion, run:
+
+oc describe is/sample-app
+oc get pods
+
+Connect the output image to the deployment. If possible, perform a second build and compare Build numbers, ImageStream history, and deployment revision.
+
+Instructor questions and expected answers
+
+Question: If source changes but nobody triggers a build, will the running application change?
+Expected answer: No. Git state and cluster state are separate until a trigger, pipeline, or person starts the build and a rollout consumes the new image.
+
+Question: Does an ImageStream store image bytes?
+Expected answer: It tracks image metadata and tags; the registry stores image layers.
+
+Question: Why use an approved builder image?
+Expected answer: Consistency, supported runtimes, security patching, policy enforcement, and reduced developer maintenance.
+
+Mini activity
+
+Give teams a BuildConfig YAML and ask them to identify:
+
+1. Source repository and branch.
+2. Builder image.
+3. Output image tag.
+4. Trigger types.
+5. The first diagnostic command if the build fails.
+
+Misconceptions to correct
+
+- S2I is a build strategy, not a deployment strategy.
+- A successful build does not guarantee a healthy application.
+- ImageStream and registry are related but not identical.
+- A builder update should enter a tested change process; automatic rebuilding alone is not proof of safety.
+- Incremental builds can improve speed but may reduce reproducibility if caches are poorly controlled.
+
+Production discussion
+
+Ask how the team would promote one tested image through development, test, and production. Strong answers should mention immutable digests, provenance, scanning, signed content, controlled promotion, and separation of build from environment-specific configuration.
+
+Transition to Topic 2
+
+Close by saying: “We now understand the build engine. Next we connect it to the place where developers actually change code—Git—and trace one commit all the way into a running pod.”

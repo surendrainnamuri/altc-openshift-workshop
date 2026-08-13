@@ -1,0 +1,269 @@
+CONFIGURING ROUTES AND SERVICE EXPOSURE
+
+Workshop objective
+Attendees will understand how pods, Services, and Routes work together; create internal and external endpoints; configure TLS; and diagnose common exposure problems.
+
+1. The traffic path
+
+Pods are replaceable and their IP addresses change. A Service provides a stable internal virtual IP and DNS name. An OpenShift Route publishes an HTTP or HTTPS hostname through the cluster ingress/router layer.
+
+External client -> DNS -> OpenShift router -> Route -> Service -> ready Pod
+
+Each layer has a separate responsibility. Troubleshooting is faster when the path is tested one layer at a time.
+
+2. Services
+
+A Service selects pods by label and forwards traffic from a service port to a target port on the pods.
+
+Example:
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-app
+spec:
+  selector:
+    app: sample-app
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+
+Key fields:
+
+selector: Labels used to find backend pods.
+port: Port clients use when calling the Service.
+targetPort: Container port or named port receiving traffic.
+
+Create a Service from a Deployment when suitable:
+
+oc expose deployment/sample-app --port=8080 --target-port=8080
+
+Inspect the result:
+
+oc get service sample-app
+oc describe service sample-app
+oc get endpointslice -l kubernetes.io/service-name=sample-app
+
+If no endpoints appear, the selector does not match ready pods or the pods are not ready.
+
+3. Service exposure types
+
+ClusterIP: Default. Reachable inside the cluster. This is normally used behind an OpenShift Route.
+
+NodePort: Opens a port on each node. It is rarely the preferred application exposure method in OpenShift because Routes or managed load balancers provide better control.
+
+LoadBalancer: Requests an external load balancer from supported infrastructure. It may incur cost and requires platform support.
+
+ExternalName: Provides a DNS alias to an external hostname; it does not proxy traffic.
+
+For web applications, the common OpenShift pattern is ClusterIP Service plus Route.
+
+4. Routes
+
+A Route maps a hostname and optional path to a Service. The OpenShift ingress controller/router accepts the request and forwards it according to route configuration.
+
+Create a basic HTTP Route:
+
+oc expose service/sample-app
+oc get route sample-app
+
+Get the hostname:
+
+oc get route sample-app -o jsonpath='{.spec.host}{"\n"}'
+
+Test it:
+
+curl -i http://<route-host>
+
+Letting OpenShift generate the host is convenient for workshops. Custom hostnames require DNS to point to the ingress endpoint and may be restricted by policy.
+
+5. TLS termination modes
+
+Edge termination
+
+The router terminates TLS and forwards HTTP to the backend Service. This is common when cluster-internal traffic does not require re-encryption.
+
+oc create route edge sample-app --service=sample-app --insecure-policy=Redirect
+
+Re-encrypt termination
+
+The router terminates client TLS and starts a new TLS connection to the backend. The router must trust the backend certificate.
+
+Passthrough termination
+
+The router passes encrypted traffic to the pod, and the application terminates TLS. Because the router cannot inspect HTTP content, path-based routing is not available in the same way.
+
+Always use certificates and key management approved by the organisation. Do not paste private keys into command history during a real workshop.
+
+6. Redirecting insecure traffic
+
+For edge or re-encrypt Routes, insecure traffic policy can normally be:
+
+None: HTTP is not accepted.
+Allow: Both HTTP and HTTPS are allowed.
+Redirect: HTTP redirects to HTTPS.
+
+Redirect is generally the safest user-facing default when HTTP must remain reachable for redirection.
+
+7. Ports, labels, and readiness
+
+Three frequent causes of failed exposure are:
+
+- The Service selector does not match pod labels.
+- targetPort does not match the port on which the application listens.
+- The pod is running but not Ready, so it is excluded from service endpoints.
+
+Compare the configuration:
+
+oc get pods --show-labels
+oc get service sample-app -o yaml
+oc get endpointslice -l kubernetes.io/service-name=sample-app -o yaml
+oc describe route sample-app
+
+Test the application from inside the cluster if allowed:
+
+oc run curl-test --image=curlimages/curl --rm -it --restart=Never -- http://sample-app:8080
+
+Use an image approved and available in the workshop environment.
+
+8. Route features and design considerations
+
+Path-based routing can send a path such as /api to a Service, but application redirects and base paths must be compatible.
+
+Weighted backends can support controlled traffic splitting when configured correctly, useful for canary releases.
+
+Route labels may interact with ingress-controller sharding in advanced clusters.
+
+Timeouts, uploaded file sizes, WebSockets, and sticky sessions may require application or ingress configuration. These settings should be reviewed with the platform team instead of changed casually.
+
+9. Troubleshooting from inside out
+
+Step 1—Pod: Is the process listening on the expected interface and port?
+
+oc logs <pod-name>
+oc describe pod <pod-name>
+
+Step 2—Readiness: Is the pod Ready?
+
+oc get pods
+
+Step 3—Service: Does it have endpoints?
+
+oc get svc,endpointslice
+
+Step 4—In-cluster access: Can another pod call the Service DNS name?
+
+Step 5—Route: Is the host admitted, and does it reference the correct Service and port?
+
+oc describe route sample-app
+
+Step 6—External dependencies: Does DNS resolve, and is TLS trusted?
+
+Common symptoms:
+
+503 from router: Often no ready endpoints, wrong service port, or backend connection failure.
+
+404 from router: Host/path does not match an admitted Route, or the application returns its own 404.
+
+TLS error: Certificate, hostname, chain, termination mode, or backend trust mismatch.
+
+Timeout: Application not listening, NetworkPolicy, firewall, slow backend, or incorrect port.
+
+10. Guided exercise
+
+1. Inspect deployment labels and application port.
+2. Create a ClusterIP Service.
+3. Confirm endpoint slices include ready pods.
+4. Test the Service internally.
+5. Create an edge Route with HTTP-to-HTTPS redirect.
+6. Test externally and inspect response headers.
+7. Deliberately change a selector or port, observe the symptom, then restore it.
+
+Knowledge check
+
+- Why should clients not call pod IP addresses directly?
+- What is the difference between service port and targetPort?
+- Which TLS mode leaves termination in the application pod?
+- What does an empty EndpointSlice suggest?
+- Why can a Running pod still receive no traffic?
+
+Trainer closing line
+
+Reliable exposure is a chain: healthy pod, correct labels, correct Service port, admitted Route, valid DNS, and appropriate TLS. Test each link instead of guessing at the whole chain.
+
+EXTENDED FACILITATOR NOTES
+
+Recommended teaching time: 30 minutes
+Suggested balance: 10 minutes explanation, 10 minutes demonstration, 7 minutes fault exercise, 3 minutes review.
+
+Use the postal-address analogy carefully
+
+A pod IP is like the temporary desk location of one employee. A Service is the stable department extension. A Route is the public address and reception path. The analogy helps initially, but return quickly to selectors, EndpointSlices, ports, DNS, and TLS.
+
+Deep dive: selectors and endpoints
+
+The Service controller finds pods whose labels match the selector. EndpointSlices represent the backends available to the Service. Readiness influences whether an endpoint is eligible for normal traffic. This creates an important chain:
+
+Pod label + Service selector + Ready condition = usable backend endpoint
+
+Show side-by-side output:
+
+oc get pod --show-labels
+oc get svc practice-app -o jsonpath='{.spec.selector}{"\n"}'
+oc get endpointslice -l kubernetes.io/service-name=practice-app -o wide
+
+Port mapping exercise
+
+Give attendees this configuration:
+
+- Application listens on 8080.
+- Service port is 80.
+- Service targetPort is 8080.
+- Route target port is the named Service port “http”.
+
+Ask which port each client uses and which value must match the application listener. Reinforce that containerPort metadata does not itself make a process listen.
+
+TLS explanation for non-specialists
+
+Edge: Client TLS ends at the router; router-to-pod traffic is plain HTTP.
+Re-encrypt: Client TLS ends at the router, then a separate trusted TLS session connects router to backend.
+Passthrough: Router forwards encrypted bytes; the backend presents the certificate and terminates TLS.
+
+Ask who owns the certificate in each mode and where HTTP-aware routing is possible.
+
+Fault demonstration: selector mismatch
+
+1. Show a working request.
+2. Record current pod labels and EndpointSlices.
+3. Change the Service selector to an unused value.
+4. Observe the empty endpoints and Route response.
+5. Ask teams to diagnose without telling them what changed.
+6. Restore the selector and prove endpoint and user recovery.
+
+This is more valuable than only showing a successful oc expose command.
+
+Layered diagnostic table
+
+Client cannot resolve hostname: DNS layer.
+TLS hostname warning: certificate/SNI/hostname layer.
+Router 404: host/path admission or application-generated 404.
+Router 503: Route exists but usable backend path is unavailable.
+Service name fails inside cluster: Service/DNS/NetworkPolicy layer.
+Direct pod request fails: application listener, port, pod network, or process health.
+
+Security discussion
+
+External exposure increases attack surface. Ask whether the application needs public access, corporate access, or only in-cluster access. Discuss TLS, authentication, rate controls, NetworkPolicy, allowed source ranges where supported, and avoiding accidental exposure of admin or health endpoints.
+
+Advanced talking points
+
+- Route admission status is stronger evidence than the existence of a Route object.
+- Multiple ingress controllers may serve different route classes or label-selected routes.
+- Wildcard DNS normally maps application hosts to an ingress endpoint.
+- Sticky sessions may hide state-design problems and should be a deliberate decision.
+- NetworkPolicy can allow the Service to exist while traffic is still denied.
+
+Transition to Topic 5
+
+“The traffic path is correct, but OpenShift still needs to know which pods deserve traffic and which stuck processes should be restarted. That is the job of probes.”

@@ -1,0 +1,245 @@
+APPLICATION SCALING: MANUAL AND AUTOMATIC APPROACHES
+
+Workshop objective
+Attendees will understand replica-based scaling, perform manual scaling, configure a Horizontal Pod Autoscaler (HPA), and recognise the difference between application scaling and cluster scaling.
+
+1. What scaling means
+
+Application scaling changes the number or capacity of application instances to match demand.
+
+Horizontal scaling adds or removes pod replicas.
+Vertical scaling changes CPU or memory assigned to a pod.
+Cluster scaling adds or removes worker-node capacity.
+
+This topic focuses mainly on horizontal application scaling. More pods help only when the application can run multiple equivalent instances and traffic is distributed through a Service.
+
+2. Conditions for safe scaling
+
+- The application should be stateless, or state must be externalised to a database, cache, or persistent service.
+- A Service should select all healthy replicas.
+- Readiness probes must stop traffic reaching pods before they are ready.
+- Resource requests should be realistic, especially for autoscaling.
+- The cluster must have enough CPU, memory, and quota.
+- Sessions should not depend on one pod unless sticky-session behaviour is deliberately designed.
+
+3. Manual scaling
+
+Check the current replica count:
+
+oc get deployment sample-app
+oc get pods -l app=sample-app
+
+Scale to three replicas:
+
+oc scale deployment/sample-app --replicas=3
+
+Watch the rollout:
+
+oc get pods -l app=sample-app -w
+
+Scale back to one:
+
+oc scale deployment/sample-app --replicas=1
+
+For an older DeploymentConfig:
+
+oc scale dc/sample-app --replicas=3
+
+Manual scaling is suitable for workshops, planned events, predictable peaks, controlled tests, and emergency intervention. Its weakness is that a person or external process must detect demand and act.
+
+4. What happens behind the command
+
+The Deployment's desired replica count changes. Its ReplicaSet creates or removes pods until actual state matches desired state. The Service automatically includes ready pods that match its selector.
+
+Scaling does not clone local files or in-memory session state. Each replica is an independent pod.
+
+Validate load balancing by exposing an instance identifier in the application response or logs, then send repeated requests through the Service or Route.
+
+5. Horizontal Pod Autoscaler
+
+The HPA changes replica count automatically based on observed metrics, commonly CPU or memory utilisation. More advanced platforms may support custom or external metrics.
+
+Prerequisites:
+
+- Cluster metrics must be available.
+- Containers must declare resource requests for utilisation-based CPU or memory targets.
+- Minimum and maximum replica counts must be chosen safely.
+- The workload must tolerate rapid addition and removal of instances.
+
+Example resource configuration:
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+Create a CPU-based HPA:
+
+oc autoscale deployment/sample-app --min=2 --max=10 --cpu-percent=70
+
+Inspect it:
+
+oc get hpa
+oc describe hpa/sample-app
+
+Watch scaling decisions:
+
+oc get hpa sample-app -w
+
+The CPU percentage is calculated relative to requested CPU, not the CPU limit. Missing or unrealistic requests lead to confusing results.
+
+6. Behaviour and timing
+
+Autoscaling is not instantaneous. Metrics must be collected, evaluated, and stabilised. New pods must be scheduled, pull images, start, and pass readiness checks. Scale-down is normally conservative to avoid rapid oscillation.
+
+Important design questions:
+
+- How long does a new pod take to become ready?
+- Can downstream databases tolerate ten replicas?
+- What happens during a sudden spike before replicas start?
+- What is the minimum replica count required for availability?
+- Are resource requests based on measurement?
+
+7. Manual and automatic approaches compared
+
+Manual scaling
+
+- Simple and immediately understandable.
+- Good for planned changes and testing.
+- Requires monitoring and human or scripted intervention.
+- Can be too slow for unexpected demand.
+
+Automatic scaling
+
+- Responds continuously to metrics.
+- Reduces routine operator intervention.
+- Requires trustworthy metrics and resource requests.
+- Needs careful limits, workload testing, and downstream-capacity planning.
+
+Many production teams use both: HPA for normal demand and controlled manual changes for special events or incident response.
+
+8. Vertical and cluster scaling
+
+Vertical scaling changes pod requests and limits. It often causes pods to restart and is constrained by node capacity. A Vertical Pod Autoscaler may be available, but it must be coordinated carefully with HPA.
+
+Cluster autoscaling changes the number of worker nodes. It solves insufficient cluster capacity; it does not replace HPA. The relationship is:
+
+HPA requests more pods -> scheduler needs capacity -> cluster autoscaler may add nodes
+
+Permissions for cluster scaling are normally reserved for platform administrators.
+
+9. Troubleshooting scaling
+
+HPA shows unknown metrics: Check the metrics service, pod resource requests, HPA events, and selector matching.
+
+Replica count increases but pods remain Pending: Inspect quotas, resource availability, taints, affinity, and persistent-volume restrictions.
+
+New pods run but receive no traffic: Check readiness probes, Service selectors, endpoints, and target ports.
+
+Application becomes inconsistent: Investigate local state, session storage, shared files, and concurrency handling.
+
+Useful commands:
+
+oc describe hpa/sample-app
+oc top pods
+oc get deployment sample-app -o yaml
+oc describe pod/<pod-name>
+oc get events --sort-by=.lastTimestamp
+oc get endpointslice -l kubernetes.io/service-name=sample-app
+
+10. Guided exercise
+
+1. Record current replicas and resource requests.
+2. Manually scale from one to three.
+3. Confirm all ready replicas appear behind the Service.
+4. Scale down and observe termination.
+5. Create an HPA with safe workshop limits.
+6. Generate controlled load using an approved test tool.
+7. Watch metrics, desired replicas, pods, and application response.
+8. Stop the load and observe gradual scale-down.
+9. Delete or retain the HPA according to the lab cleanup instructions.
+
+Knowledge check
+
+- Why do CPU-based HPAs require CPU requests?
+- What is the difference between HPA and cluster autoscaling?
+- Why might a stateful application behave badly with more replicas?
+- Why is readiness essential during scale-up?
+- What protects the cluster from unlimited scaling?
+
+Trainer closing line
+
+Scaling is not just changing a number. Reliable scaling combines application design, resource data, health checks, traffic distribution, and safe upper and lower limits.
+
+EXTENDED FACILITATOR NOTES
+
+Recommended teaching time: 25 minutes
+Suggested balance: 8 minutes explanation, 8 minutes demonstration, 6 minutes design exercise, 3 minutes review.
+
+Start with the bottleneck question
+
+Ask: “If we change one pod to ten pods, will the application handle ten times the traffic?” The correct answer is “not automatically.” The database, message broker, external API, storage, connection pool, route, or cluster capacity may become the limiting factor.
+
+Explain desired versus actual state
+
+When replicas are set to three, the Deployment expresses desired state. The ReplicaSet and scheduler work toward that number. For a short period, desired, current, available, and ready replicas may differ. Use oc get deployment -w so participants see convergence rather than assuming the command creates three instantly healthy instances.
+
+State and session exercise
+
+Ask participants where the following data should live if replicas can change:
+
+- User login session.
+- Uploaded file.
+- Shopping basket.
+- Temporary request cache.
+- Scheduled job lock.
+
+Use answers to discuss shared persistence, external session stores, idempotency, coordination, and the risk of duplicate work.
+
+HPA calculation concept
+
+For CPU utilisation, explain the simplified intuition:
+
+desired replicas approximately equals current replicas multiplied by current utilisation divided by target utilisation
+
+Example: two replicas average 140% of requested CPU with a 70% target. The proportional result suggests approximately four replicas, subject to controller tolerances, policies, stabilisation, and min/max bounds.
+
+Do not promise exact instantaneous results. The controller applies timing and safety behaviour.
+
+Resource request discussion
+
+Requests are scheduling promises and the denominator for utilisation-based HPA. Limits are enforcement ceilings. If CPU request is far below normal use, utilisation looks artificially high. If far above normal use, scale-up may occur too late. Measurement should drive both.
+
+Demonstration observations
+
+During scale-up, have attendees watch four views:
+
+oc get deployment practice-app -w
+oc get pods -w
+oc get endpointslice -l kubernetes.io/service-name=practice-app -w
+oc get hpa -w
+
+Explain that a created pod is not immediately a traffic endpoint; readiness is the gate.
+
+Design activity
+
+Give this scenario: normal traffic needs two pods, a pod takes 45 seconds to become Ready, the database supports 40 connections, and every pod opens five. Ask teams to propose min/max replicas and identify the database constraint. Expected insight: eight pods consume all 40 connections, so a max of ten is unsafe without changing connection behaviour or database capacity.
+
+Scaling failure patterns
+
+- Pending replicas indicate capacity, quota, scheduling, or storage constraints.
+- Rapid oscillation suggests noisy metrics, poor thresholds, or insufficient stabilisation.
+- High latency with low CPU suggests CPU is the wrong metric.
+- Healthy pods but database errors suggest downstream saturation.
+- Slow scale-up suggests image pull/startup/readiness time dominates.
+
+Advanced talking point
+
+Autoscaling is a feedback-control system. Delayed metrics, long startup, aggressive targets, and slow downstream systems can create instability. Capacity planning is still required even when automation is enabled.
+
+Transition to Topic 4
+
+“We can now create several healthy instances. They become useful only when traffic can find them reliably, so we will follow a request through Service and Route.”

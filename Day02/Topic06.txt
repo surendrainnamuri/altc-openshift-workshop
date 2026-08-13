@@ -1,0 +1,335 @@
+DEBUGGING CONTAINERS WITH CLI AND UI TOOLS
+
+Workshop objective
+Attendees will use a repeatable troubleshooting method, collect evidence with the oc CLI and Web Console, inspect logs and events, enter containers safely, and distinguish build, scheduling, startup, networking, and application failures.
+
+1. A disciplined debugging mindset
+
+Start with symptoms, not assumptions. Record what failed, when it began, which users or pods are affected, and what changed. Then narrow the problem through the application path:
+
+Build -> Image -> Deployment -> Pod scheduling -> Container startup -> Readiness -> Service -> Route -> Client
+
+Avoid making several changes at once. Capture evidence, form one hypothesis, test it, and record the result.
+
+2. First-response commands
+
+Confirm identity and project:
+
+oc whoami
+oc project
+
+Get a broad view:
+
+oc get deployment,replicaset,pods,service,route
+oc get pods -o wide
+oc get events --sort-by=.lastTimestamp
+
+Inspect a problematic pod:
+
+oc describe pod <pod-name>
+
+Look at Status, Conditions, container State/Last State, restart count, image, mounts, readiness, and Events.
+
+3. Reading pod states
+
+Pending: Pod has not been scheduled or cannot complete setup. Check capacity, quota, affinity, taints, volumes, and events.
+
+ContainerCreating: Image pull, volume mount, or networking setup is in progress or failing.
+
+ImagePullBackOff / ErrImagePull: Image name, tag, registry authentication, network, or pull policy problem.
+
+CrashLoopBackOff: Container starts and exits repeatedly. Inspect current and previous logs plus exit code.
+
+Running but not Ready: Readiness probe fails or a required container is unready.
+
+Completed: Normal for Jobs, but unexpected for a long-running web application whose main process exits.
+
+OOMKilled: Container exceeded its memory limit. Investigate memory behaviour and right-size resources; do not simply raise limits without evidence.
+
+4. Logs
+
+Current container logs:
+
+oc logs <pod-name>
+
+Specific container in a multi-container pod:
+
+oc logs <pod-name> -c <container-name>
+
+Follow output:
+
+oc logs -f <pod-name>
+
+Logs from the previous terminated instance:
+
+oc logs <pod-name> --previous
+
+Logs by workload or label can be useful, but confirm which pods and containers are included:
+
+oc logs deployment/sample-app --all-containers=true
+
+Application logs should go to standard output/error where the platform logging system can collect them. Never expose passwords, tokens, or personal data during workshop demonstrations.
+
+5. Shell and command execution
+
+Open a shell when the image provides one:
+
+oc rsh <pod-name>
+
+Run a specific command:
+
+oc exec <pod-name> -- printenv
+oc exec <pod-name> -- ls -la /opt/app-root/src
+
+For a multi-container pod:
+
+oc exec <pod-name> -c <container-name> -- <command>
+
+Minimal or distroless images may not contain a shell, curl, ps, or package manager. Do not modify a running production container by installing tools; the change is temporary, damages reproducibility, and may violate policy.
+
+Where authorised and supported, oc debug can create a diagnostic copy or debug environment:
+
+oc debug deployment/sample-app
+
+Check oc debug --help on the installed client and follow cluster security policy.
+
+6. Inspecting configuration
+
+View the desired workload:
+
+oc get deployment sample-app -o yaml
+
+Compare environment and configuration references:
+
+oc set env deployment/sample-app --list
+oc get configmap
+oc get secret
+
+Do not print Secret values in a shared session. Confirm names, keys, mounts, and permissions without disclosing sensitive content.
+
+Inspect resource requests, limits, probes, image, command, and arguments:
+
+oc describe deployment sample-app
+oc describe pod <pod-name>
+
+7. Networking checks
+
+Work from inside out:
+
+- Does the process listen on the expected container port and interface?
+- Is the pod Ready?
+- Does the Service selector match pod labels?
+- Does the Service have EndpointSlices?
+- Can an in-cluster client call the Service DNS name?
+- Does the Route point to the correct Service port?
+- Does external DNS resolve and TLS validate?
+
+Commands:
+
+oc get pods --show-labels
+oc describe service sample-app
+oc get endpointslice -l kubernetes.io/service-name=sample-app
+oc describe route sample-app
+
+Use a temporary diagnostic pod only with an approved image and clean it up afterward.
+
+8. Build and rollout debugging
+
+Build problems:
+
+oc get builds
+oc describe build/<build-name>
+oc logs build/<build-name>
+
+Rollout problems:
+
+oc rollout status deployment/sample-app
+oc rollout history deployment/sample-app
+oc get replicaset
+
+Confirm the exact image digest used by a pod:
+
+oc get pod <pod-name> -o jsonpath='{.status.containerStatuses[*].imageID}{"\n"}'
+
+If a new release fails, pause and follow the organisation's rollback process. A common Kubernetes Deployment command is:
+
+oc rollout undo deployment/sample-app
+
+Rollback restores workload configuration to a previous revision; it does not repair databases, external dependencies, or incompatible state migrations.
+
+9. Using the OpenShift Web Console
+
+Developer perspective—Topology:
+
+- Observe workload status, build status, routes, and visual relationships.
+- Select a component to view pods, logs, events, resources, and rollout information.
+
+Pod details:
+
+- Review YAML, Logs, Events, Terminal, Metrics, and container status where permissions allow.
+- Use the Terminal carefully; commands run inside a live container.
+
+Observe:
+
+- CPU and memory trends.
+- Restart counts.
+- Probe failures.
+- Deployment progress.
+- Build logs and trigger history.
+
+The UI and CLI query the same API. Use the UI to recognise patterns and relationships; use the CLI for precise queries, repeatability, and sharing diagnostic commands.
+
+10. Evidence-to-cause examples
+
+Symptom: CrashLoopBackOff
+Evidence: --previous logs show missing environment variable
+Likely cause: Deployment configuration or missing Secret key
+
+Symptom: Route returns 503
+Evidence: Service has no EndpointSlices
+Likely cause: selector mismatch or no ready pods
+
+Symptom: Pod Pending
+Evidence: event says insufficient memory
+Likely cause: requests exceed available schedulable capacity
+
+Symptom: New code not visible
+Evidence: pod image digest is older than latest ImageStreamTag
+Likely cause: rollout/trigger did not update the Deployment
+
+Symptom: Frequent restarts
+Evidence: Last State reports OOMKilled
+Likely cause: memory limit exceeded or memory leak
+
+11. Trainer-led incident drill
+
+1. Introduce one fault without revealing it.
+2. Ask attendees to state the user-visible symptom.
+3. Gather workload and pod status.
+4. Inspect events before changing configuration.
+5. Read current or previous logs.
+6. Test Service endpoints and Route if relevant.
+7. Form a hypothesis and make one correction.
+8. verify recovery through rollout, readiness, and user-facing response.
+9. Record root cause, evidence, corrective action, and prevention.
+
+Knowledge check
+
+- Why are events often more useful than logs for Pending pods?
+- When should --previous be used?
+- Why might oc rsh fail even when a container is running?
+- How can you distinguish a Route issue from a pod issue?
+- Why should troubleshooting changes be made one at a time?
+
+Trainer closing line
+
+Effective debugging is a traceable investigation. Follow the resource chain, use status, events, logs, metrics, and network evidence, and prove both the cause and the recovery.
+
+EXTENDED FACILITATOR NOTES
+
+Recommended teaching time: 35 minutes
+Suggested balance: 10 minutes method, 12 minutes demonstrations, 10 minutes team diagnosis, 3 minutes review.
+
+Teach a fixed diagnostic ladder
+
+1. Scope: Who and what is affected?
+2. Status: Which resource first shows abnormal state?
+3. Events: What did the platform report?
+4. Logs: What did the application or build report?
+5. Configuration: What desired state was requested?
+6. Dependencies and network: Can each next hop be reached?
+7. Metrics: Was there saturation, throttling, or exhaustion?
+8. Change history: What changed near the start of impact?
+9. Hypothesis: Which single explanation fits the evidence?
+10. Verification: Does one correction restore every success criterion?
+
+Distinguish control-plane and application evidence
+
+Events often explain scheduling, image pulls, volume mounts, probes, and admission. Application logs explain behaviour after the process starts. Build logs explain source retrieval and compilation. Router or ingress evidence explains external forwarding. Using the wrong evidence source wastes time.
+
+Status interpretation exercise
+
+Show five prepared pod descriptions and ask teams to classify each:
+
+- Unschedulable due to quota or capacity.
+- Image pull authentication failure.
+- Application exits with non-zero code.
+- Readiness probe returns 503.
+- Container terminated with OOMKilled.
+
+For each, require the exact field or event that supports the answer.
+
+CLI versus Web Console
+
+Use both for the same incident:
+
+- Web Console Topology reveals relationships and unhealthy visual indicators.
+- Pod Events show lifecycle messages.
+- Logs provide immediate application output.
+- Metrics reveal trends.
+- CLI JSONPath/YAML queries prove exact field values and are repeatable.
+
+Avoid framing this as beginner UI versus expert CLI. Skilled operators choose the interface that answers the current question fastest and produces shareable evidence.
+
+Debugging a CrashLoopBackOff
+
+Demonstrate this sequence:
+
+oc get pods
+oc describe pod <pod-name>
+oc logs <pod-name> --previous
+oc get deployment practice-app -o yaml
+
+Ask attendees to find exit code, reason, restart count, and the last log message. Explain exponential backoff: the platform delays repeated restarts; CrashLoopBackOff is a waiting condition, not the application's root cause.
+
+Debugging a Pending pod
+
+Do not begin with application logs because the container may never have started. Start with describe and events. Look for insufficient resources, unbound claims, affinity/taint conflicts, quota, security admission, or image setup messages.
+
+Debugging networking
+
+Use progressive isolation:
+
+1. Call localhost inside the application container if tools exist.
+2. Call the pod IP from an authorised diagnostic pod.
+3. Call Service DNS and port.
+4. Inspect EndpointSlices and NetworkPolicy.
+5. Call the Route from inside and outside expected networks.
+6. Validate DNS and TLS independently.
+
+The exact steps depend on security policy and image tooling. Never weaken policy merely to make debugging convenient.
+
+Evidence log template
+
+Time:
+Command/view:
+Observed result:
+What it proves:
+Next question:
+
+Require teams to use this during the fault exercise. It prevents circular troubleshooting and makes handover clearer.
+
+Recovery is not root cause
+
+Restarting a pod may restore service but does not prove why it failed. Scaling may mask latency without solving the bottleneck. Rolling back may mitigate impact without identifying the defective change. Separate:
+
+- Mitigation: Reduce user impact now.
+- Correction: Repair the immediate fault.
+- Root cause: Explain why the fault occurred.
+- Prevention: Reduce likelihood or impact of recurrence.
+
+Team diagnosis exercise
+
+Give each team one symptom and three minutes to propose the first three evidence-gathering actions. Score the sequence, not whether they guess the cause. Strong answers start at the resource matching the symptom and avoid mutation until evidence is collected.
+
+Advanced talking points
+
+- Ephemeral containers or oc debug may help with minimal images, subject to permissions and version support.
+- Audit logs answer “who changed what” but are usually administrator-controlled.
+- Centralised logs and metrics outlive short-lived pods.
+- Correlation IDs connect Route requests to application and downstream logs.
+- A good incident timeline distinguishes detection time, impact start, mitigation, recovery, and confirmed root cause.
+
+Transition to integrated practice
+
+“You now have the tools. In the final exercise, the goal is not to repair the application fastest; it is to show the shortest defensible chain from symptom to evidence, cause, correction, and proof.”

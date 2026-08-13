@@ -1,0 +1,252 @@
+HEALTH CHECKS: READINESS AND LIVENESS PROBES
+
+Workshop objective
+Attendees will configure health probes, explain how readiness and liveness affect traffic and restarts, and tune probes without creating restart loops or premature traffic.
+
+1. Why health checks are needed
+
+A running container process is not proof that an application can serve users. It may still be initialising, waiting for a dependency, deadlocked, or unable to answer requests.
+
+OpenShift/Kubernetes probes let the platform ask the application specific questions:
+
+Readiness: “Can this container receive traffic now?”
+Liveness: “Is this container still healthy enough to keep running?”
+Startup: “Has this slow-starting container finished starting yet?”
+
+2. Readiness probe
+
+When readiness fails, the pod remains running but its endpoint is removed from Service traffic. When readiness succeeds again, traffic can resume.
+
+Use readiness for temporary inability to serve requests—for example, cache warm-up, connection-pool initialisation, or graceful draining.
+
+Readiness failure does not restart the container.
+
+Example HTTP readiness probe:
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8080
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 3
+  successThreshold: 1
+
+3. Liveness probe
+
+When liveness repeatedly fails, the kubelet restarts the container according to pod restart policy. Use it to detect conditions that cannot recover without a restart, such as a deadlock.
+
+Example HTTP liveness probe:
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 3
+
+A poor liveness probe can make an incident worse. If it depends on a shared database and that database fails, every application pod may restart even though restarting cannot repair the database.
+
+4. Startup probe
+
+A startup probe protects slow-starting applications. Until it succeeds, readiness and liveness checks do not take over. This is better than giving liveness an excessively long initial delay.
+
+startupProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  periodSeconds: 5
+  failureThreshold: 30
+
+This example allows up to approximately 150 seconds for startup, excluding request overhead.
+
+5. Probe mechanisms
+
+HTTP GET: Suitable for applications exposing a dedicated health endpoint. Expected success is normally an HTTP status in the 200–399 range.
+
+TCP socket: Confirms that a port accepts a connection. It does not prove the application can perform useful work.
+
+Exec: Runs a command inside the container. It is flexible but can consume more resources and may behave differently from the actual client path.
+
+gRPC: Suitable when the platform version and application support the gRPC health checking protocol.
+
+Choose the cheapest probe that answers the right health question.
+
+6. Important timing fields
+
+initialDelaySeconds: Delay before the first probe, unless startupProbe controls startup.
+periodSeconds: Time between probes.
+timeoutSeconds: Maximum wait for each response.
+failureThreshold: Consecutive failures required before action.
+successThreshold: Consecutive successes required to return to success; liveness and startup require a value of 1.
+
+Effective failure detection is roughly periodSeconds multiplied by failureThreshold, plus request timing. Tune from measured startup and response data, not guesswork.
+
+7. Adding probes with the CLI
+
+The exact oc set probe syntax can vary with client version. Check local help:
+
+oc set probe --help
+
+Example pattern:
+
+oc set probe deployment/sample-app --readiness --get-url=http://:8080/ready
+oc set probe deployment/sample-app --liveness --get-url=http://:8080/health
+
+Inspect the resulting Deployment rather than assuming defaults:
+
+oc get deployment sample-app -o yaml
+
+For repeatable delivery, store the final probe configuration in version-controlled YAML, Helm, Kustomize, or GitOps configuration.
+
+8. Designing good health endpoints
+
+A readiness endpoint should answer whether this instance can serve traffic now. It may check essential internal state, but slow or unstable downstream checks can cause traffic oscillation.
+
+A liveness endpoint should identify whether the local process is irrecoverably unhealthy. Keep it independent of temporary external outages whenever possible.
+
+Health endpoints should be lightweight, deterministic, and protected from leaking secrets or detailed internal diagnostics.
+
+9. Observing probe behaviour
+
+View pod readiness and restart counts:
+
+oc get pods
+
+Inspect events and probe messages:
+
+oc describe pod <pod-name>
+
+View current and previous container logs:
+
+oc logs <pod-name>
+oc logs <pod-name> --previous
+
+Check Service endpoints:
+
+oc get endpointslice -l kubernetes.io/service-name=sample-app
+
+The --previous option is especially important after a liveness-triggered restart because the current container logs may not contain the original failure.
+
+10. Common mistakes
+
+Same deep dependency check for readiness and liveness: A database outage can remove every endpoint and restart every pod.
+
+Probe starts too early: Slow applications enter a restart loop. Use a startup probe.
+
+Timeout too short: Normal latency causes false failures.
+
+Endpoint always returns success: The probe provides no meaningful protection.
+
+Health check performs heavy work: Probes create their own load and can contribute to failure.
+
+Wrong port or path: Events show connection refused or unexpected status codes.
+
+11. Guided demonstration
+
+1. Deploy an application without probes and discuss the limits of Running status.
+2. Add readiness and show the Ready column and Service endpoints.
+3. Make readiness fail and confirm the pod remains running but stops receiving traffic.
+4. Restore readiness and observe traffic resume.
+5. Demonstrate a controlled liveness failure and observe restart count.
+6. Use oc logs --previous to inspect the terminated container.
+7. Add a startup probe for a simulated slow start.
+
+Knowledge check
+
+- Which probe removes a pod from Service traffic?
+- Which probe can cause a container restart?
+- Why should liveness avoid depending on a remote database?
+- When is a startup probe valuable?
+- Where can you see probe failure messages?
+
+Trainer closing line
+
+Readiness protects users from pods that cannot serve traffic. Liveness recovers a locally stuck process. Startup protects slow applications from premature judgement. Good probes express three different intentions, not one copied health check.
+
+EXTENDED FACILITATOR NOTES
+
+Recommended teaching time: 30 minutes
+Suggested balance: 10 minutes explanation, 10 minutes demonstration, 7 minutes design activity, 3 minutes review.
+
+The hospital-triage analogy
+
+Readiness asks whether the person is ready to work now. Liveness asks whether intervention is needed to recover them. Startup grants a known recovery period before applying the normal tests. Make clear that probes are automated control signals, not general monitoring dashboards.
+
+Probe consequence table
+
+Readiness fails:
+
+- Container keeps running.
+- Pod becomes not Ready.
+- Pod is normally removed from Service endpoints.
+- No automatic container restart is caused by readiness alone.
+
+Liveness fails beyond threshold:
+
+- Kubelet restarts the container.
+- Restart count rises.
+- Existing in-memory work is lost.
+- Repeated failure can lead to CrashLoopBackOff behaviour.
+
+Startup fails beyond threshold:
+
+- Container is restarted.
+- Readiness and liveness do not take over until startup succeeds.
+
+Probe design workshop
+
+Present four candidate checks:
+
+1. “The process event loop responds.”
+2. “The database is reachable.”
+3. “Configuration is loaded and the server can accept requests.”
+4. “Every external partner API responds.”
+
+Ask which belong in liveness, readiness, startup, or external monitoring. There is no universal answer, but participants should reason about consequence. A check belongs only where its failure should trigger that probe's action.
+
+Failure amplification example
+
+Suppose 20 pods use the same database. If liveness calls the database and it experiences a 15-second outage, all 20 containers may restart. Startup then increases database connection pressure exactly when the database is recovering. This is a classic cascading-failure pattern.
+
+Demonstration sequence
+
+1. Show Running and Ready before probes.
+2. Add readiness with a correct endpoint.
+3. Change an environment flag so readiness returns failure.
+4. Watch the Ready column and EndpointSlice membership.
+5. Prove that the process still runs.
+6. Restore readiness and observe automatic traffic recovery.
+7. Cause a controlled liveness failure.
+8. Inspect restart count, Last State, events, and --previous logs.
+
+Timing calculation activity
+
+Given periodSeconds 10, timeoutSeconds 2, and failureThreshold 3, ask approximately how long persistent failure may take to trigger action. Discuss that scheduling and request duration make the result approximate, and that one intermittent success may reset consecutive failure counting.
+
+Health endpoint quality checklist
+
+- Fast under normal and degraded conditions.
+- Does not modify state.
+- Does not require expensive queries.
+- Returns consistent status codes.
+- Has bounded dependency timeouts.
+- Does not expose secrets or stack traces.
+- Can be called at the configured frequency across every replica.
+
+Common facilitator correction
+
+Participants often say, “Liveness checks whether the app is healthy.” Refine this to: “Liveness checks whether restarting this container is the appropriate recovery action.” This wording produces safer probe designs.
+
+Advanced talking points
+
+- Readiness gates can coordinate additional readiness conditions in advanced workloads.
+- Graceful termination and readiness work together during rollout and scale-down.
+- A probe endpoint that shares an exhausted worker pool may accurately reveal unresponsiveness, but thresholds must tolerate short saturation.
+- External synthetic monitoring still matters because probes do not test the full client-to-Route journey.
+
+Transition to Topic 6
+
+“Probes give OpenShift automated evidence. As operators, we need a broader investigation method that combines probe events with logs, configuration, networking, rollout state, and metrics.”

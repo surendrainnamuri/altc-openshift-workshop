@@ -1,0 +1,1581 @@
+LAB 02 - BUILD, DEPLOY, SCALE, EXPOSE, MONITOR, AND TROUBLESHOOT AN OPENSHIFT APPLICATION
+
+Lab type: Progressive hands-on workshop
+Recommended duration: 120-150 minutes when completed in full
+Four-hour workshop usage: The trainer may demonstrate selected steps and allocate 45-60 minutes for participant practice
+Difficulty: Foundation to intermediate
+
+======================================================================
+1. LAB PURPOSE
+======================================================================
+
+In this lab, you will take application source code from Git and move it through the complete OpenShift application lifecycle:
+
+Git source
+   |
+   v
+Source-to-Image BuildConfig
+   |
+   v
+Build and output image
+   |
+   v
+ImageStreamTag
+   |
+   v
+Deployment and Pods
+   |
+   v
+Service
+   |
+   v
+Route
+   |
+   v
+External user
+
+You will then add health probes, scale the application manually, examine automatic scaling, and troubleshoot controlled failures.
+
+This is a progressive lab. Each section uses resources created in the previous section. Complete the sections in order unless your trainer provides a prepared project.
+
+======================================================================
+2. LEARNING OUTCOMES
+======================================================================
+
+After completing this lab, you should be able to:
+
+1. Discover an appropriate S2I builder image.
+2. Create an application from a Git repository.
+3. Follow and interpret an OpenShift build.
+4. Trace a Git revision to a build and output image.
+5. Inspect Deployment, pod, Service, and Route resources.
+6. Scale an application manually.
+7. Explain and optionally configure a Horizontal Pod Autoscaler.
+8. Configure readiness, liveness, and startup probes.
+9. Troubleshoot build, pod, Service, Route, and probe failures.
+10. Use both the oc CLI and OpenShift Web Console to gather evidence.
+
+======================================================================
+3. PREREQUISITES
+======================================================================
+
+You require:
+
+- Access to an OpenShift cluster or Developer Sandbox.
+- Access to the OpenShift Web Console.
+- The oc command-line client.
+- Permission to create projects, builds, deployments, services, routes, and autoscalers.
+- Access from the cluster to the selected Git repository.
+- A supported Node.js builder image in the cluster.
+- Cluster metrics if the HPA exercise is performed.
+
+The examples use this public learning repository:
+
+https://github.com/sclorg/nodejs-ex.git
+
+If the repository or required branch is unavailable, use the repository supplied by the trainer. Replace all repository, builder, port, and health-path values with those appropriate to the supplied application.
+
+Command conventions
+
+- Text inside angle brackets is a placeholder. Replace it before running the command.
+- Commands are shown one per line so they can be copied safely.
+- Do not copy explanatory text into the terminal.
+- Some oc output differs by OpenShift version.
+- If a command is unsupported, use oc <command> --help and follow the trainer's version-specific guidance.
+- Do not display Secret values during a shared workshop.
+
+Resource names used throughout the lab
+
+Project: day02-<your-id>
+Application: s2i-lab-app
+Git repository: https://github.com/sclorg/nodejs-ex.git
+
+Choose a short, unique identifier such as your initials and a number. For example, learner ab12 would use project day02-ab12.
+
+======================================================================
+4. LAB 0 - CONNECT TO OPENSHIFT AND PREPARE THE PROJECT
+======================================================================
+
+Objective
+
+Confirm your identity, select an isolated project, and verify that the cluster exposes the resources needed for the lab.
+
+Step 0.1 - Log in using the oc CLI
+
+Obtain a login command from the OpenShift Web Console. It normally resembles:
+
+oc login --token=<token> --server=<api-server-url>
+
+What the command does
+
+oc login authenticates the CLI to the OpenShift API and stores a local context. The token represents your identity and must be protected.
+
+Security note
+
+Do not paste your token into chat, screenshots, source control, or training notes. Use only the official cluster login flow.
+
+Verify the active identity:
+
+oc whoami
+
+Expected result
+
+The command prints your OpenShift username.
+
+Display the API server:
+
+oc whoami --show-server
+
+Step 0.2 - Create the workshop project
+
+oc new-project day02-<your-id>
+
+What the command does
+
+This creates an OpenShift project, which is a Kubernetes namespace with OpenShift project metadata and access controls. It also changes your active CLI context to that project.
+
+If the project already exists, select it:
+
+oc project day02-<your-id>
+
+Verify the current project:
+
+oc project
+
+Expected result
+
+The output confirms that you are using day02-<your-id>.
+
+Step 0.3 - Check for project constraints
+
+oc get resourcequota
+
+oc get limitrange
+
+What the commands do
+
+ResourceQuota limits total project consumption. LimitRange may supply or enforce default CPU and memory values. These controls can influence scheduling, scaling, and build behaviour.
+
+Do not treat “No resources found” as an error. It means no namespace-level object of that type is visible in your project; cluster-level policies may still apply.
+
+Checkpoint
+
+- You can authenticate.
+- You are in your unique Day02 project.
+- You understand that every following resource is namespaced to this project.
+
+======================================================================
+5. LAB 1 - INTRODUCTION TO SOURCE-TO-IMAGE WORKFLOWS
+======================================================================
+
+Objective
+
+Discover a builder image, create an S2I application, observe the build phases, and inspect the resources that connect source code to a running pod.
+
+Concept recap
+
+S2I combines application source with a builder image. The builder contains the runtime and scripts that assemble and start the application.
+
+Source + Builder image + S2I scripts = Application container image
+
+Step 1.1 - Search for a Node.js builder
+
+oc new-app --search nodejs
+
+What the command does
+
+The --search option asks OpenShift to find image streams, container images, or templates matching “nodejs.” It does not create an application.
+
+Alternative inspection:
+
+oc get imagestreams -n openshift
+
+What to identify
+
+Find an ImageStreamTag supported by the cluster, such as nodejs:<available-tag>. Do not assume that nodejs:20 exists. Record the exact builder reference supplied by your trainer or returned by the cluster.
+
+Builder selected: ______________________________________________
+
+Step 1.2 - Preview application creation
+
+Run a dry run and request YAML output:
+
+oc new-app <builder-image>~https://github.com/sclorg/nodejs-ex.git --name=s2i-lab-app --dry-run=client -o yaml
+
+What the command does
+
+oc new-app examines the builder and Git repository, then generates resource definitions. --dry-run=client prevents them from being submitted to the cluster. -o yaml displays the generated desired state.
+
+What to look for
+
+- Git repository URI.
+- Source build strategy.
+- Builder image reference.
+- Output ImageStreamTag.
+- Deployment or DeploymentConfig, depending on cluster behaviour.
+- Service port.
+
+If the client version does not support this dry-run combination, skip the preview and inspect the resources after creation.
+
+Step 1.3 - Create the application
+
+oc new-app <builder-image>~https://github.com/sclorg/nodejs-ex.git --name=s2i-lab-app
+
+What the command does
+
+The tilde separates the builder image from the Git source. OpenShift creates the objects required to build the source and run the resulting image. The exact generated resources depend on platform and client version.
+
+Expected resources normally include:
+
+- BuildConfig named s2i-lab-app.
+- ImageStream named s2i-lab-app.
+- Deployment or DeploymentConfig named s2i-lab-app.
+- Service named s2i-lab-app.
+- A Build such as s2i-lab-app-1.
+
+Step 1.4 - Watch build state
+
+oc get builds -w
+
+What the command does
+
+-w watches the API and prints changes. A Build normally moves through New, Pending, Running, and Complete. Press Ctrl+C after the build completes.
+
+In another terminal, or after stopping the watch, follow build logs:
+
+oc logs -f bc/s2i-lab-app
+
+What the command does
+
+oc logs against a BuildConfig selects its latest build. -f follows output until the build ends. The log should show Git cloning, dependency installation, S2I assembly, image creation, and image push.
+
+If this command cannot select a build, list builds and use the explicit name:
+
+oc get builds
+
+oc logs -f build/s2i-lab-app-1
+
+Step 1.5 - Inspect the BuildConfig
+
+oc describe bc/s2i-lab-app
+
+What to locate
+
+- Source repository.
+- Build strategy.
+- Builder image.
+- Output destination.
+- Trigger types.
+- Build history.
+
+View the complete resource:
+
+oc get bc/s2i-lab-app -o yaml
+
+Important relationship
+
+BuildConfig is the reusable build recipe. Build s2i-lab-app-1 is one execution of that recipe. Starting another build creates s2i-lab-app-2; it does not replace the BuildConfig.
+
+Step 1.6 - Inspect the output image
+
+oc describe is/s2i-lab-app
+
+What the command does
+
+It shows ImageStream tags and image history. The ImageStream tracks image references and metadata; registry storage holds the image layers.
+
+List image stream tags:
+
+oc get istag
+
+Step 1.7 - Inspect runtime resources
+
+oc get deployment,dc,replicaset,pods,service
+
+What the command does
+
+This intentionally requests both Deployment and DeploymentConfig. Identify which workload type your environment created. Use the matching resource type in later commands.
+
+Record the workload type: Deployment / DeploymentConfig
+
+Inspect the pod:
+
+oc get pods -o wide
+
+oc describe pod <pod-name>
+
+What to verify
+
+- Pod reaches Running.
+- Ready column becomes 1/1 for a single-container pod.
+- Image refers to the build output.
+- No warning events remain unresolved.
+
+Step 1.8 - Start a second build manually
+
+oc start-build s2i-lab-app --follow --wait
+
+What the command does
+
+This manually instantiates a new Build from the BuildConfig, waits for completion, and streams its logs.
+
+Verify build history:
+
+oc get builds
+
+oc describe is/s2i-lab-app
+
+Expected observation
+
+A new Build number exists. The ImageStream history contains a new image entry if the build produced and pushed a new image.
+
+Lab 1 knowledge check
+
+1. What is the difference between a BuildConfig and a Build?
+2. What does the builder image contribute?
+3. Where is the output image tracked?
+4. Which command shows compilation and dependency-installation errors?
+5. Does a Complete build prove the application is healthy? Why not?
+
+======================================================================
+6. LAB 2 - DEPLOYING APPLICATIONS WITH GIT INTEGRATION
+======================================================================
+
+Objective
+
+Inspect Git source configuration, select a source revision, understand webhooks and private-repository access, and prove how a source version becomes a running image.
+
+Step 2.1 - Inspect Git configuration in the BuildConfig
+
+oc get bc/s2i-lab-app -o jsonpath='{.spec.source.git.uri}{"\n"}'
+
+What the command does
+
+JSONPath selects only the Git URI from the BuildConfig instead of displaying all YAML.
+
+Display the configured Git reference:
+
+oc get bc/s2i-lab-app -o jsonpath='{.spec.source.git.ref}{"\n"}'
+
+An empty ref normally means the repository's default branch is used.
+
+Step 2.2 - Inspect the exact source used by a Build
+
+oc get build/s2i-lab-app-1 -o yaml
+
+Look in the Build status and annotations for source revision information supported by the cluster, such as commit, author, or message.
+
+Why this matters
+
+A branch name is movable. A commit SHA is stronger evidence of the exact source revision fetched for a build.
+
+Record the commit identifier, if reported:
+
+Commit: _________________________________________________________
+
+Step 2.3 - Configure a branch intentionally
+
+First list or confirm a valid branch in the assigned repository. Do not set a branch that you have not verified.
+
+Example patch:
+
+oc patch bc/s2i-lab-app --type=merge -p '{"spec":{"source":{"git":{"ref":"<valid-branch>"}}}}'
+
+What the command does
+
+oc patch changes only the selected BuildConfig fields. It configures future builds to fetch the named branch or revision.
+
+Verify the change:
+
+oc get bc/s2i-lab-app -o jsonpath='{.spec.source.git.ref}{"\n"}'
+
+If the trainer has not supplied a valid alternate branch, do not run this patch. The goal is to understand the field, not to intentionally break the build yet.
+
+Step 2.4 - Understand context directories
+
+Monorepositories may contain multiple applications. contextDir tells the build which repository subdirectory becomes the build context.
+
+Inspect the current value:
+
+oc get bc/s2i-lab-app -o jsonpath='{.spec.source.contextDir}{"\n"}'
+
+Example only - do not run unless the repository contains this directory:
+
+oc patch bc/s2i-lab-app --type=merge -p '{"spec":{"source":{"contextDir":"services/api"}}}'
+
+If contextDir points to the wrong path, the build may clone successfully but fail to find package.json, pom.xml, requirements.txt, or other build files.
+
+Step 2.5 - Examine build triggers
+
+oc get bc/s2i-lab-app -o jsonpath='{.spec.triggers}{"\n"}'
+
+oc describe bc/s2i-lab-app
+
+Trigger meanings
+
+ConfigChange: Starts a build after relevant BuildConfig creation or change.
+ImageChange: Starts a build when a referenced builder image changes.
+Webhook: Allows an external Git service to notify OpenShift.
+Manual: oc start-build explicitly creates a Build.
+
+If a webhook trigger is configured, oc describe may show a webhook URL. Treat its secret as sensitive. Do not include it in screenshots or shared documents.
+
+Step 2.6 - Optional trainer demonstration: private Git repository
+
+Do not create a real credential unless the trainer has provided a safe workshop key or token.
+
+Example SSH Secret pattern:
+
+oc create secret generic git-source-secret --from-file=ssh-privatekey=<path-to-workshop-private-key> --type=kubernetes.io/ssh-auth
+
+Reference pattern inside BuildConfig:
+
+spec:
+  source:
+    git:
+      uri: git@github.com:<organisation>/<repository>.git
+    sourceSecret:
+      name: git-source-secret
+
+What is happening
+
+The build pod receives permission to use the named Secret when cloning source. The credential should be narrowly scoped and should not be embedded in the Git URL or application code.
+
+Step 2.7 - Trigger and trace a new build
+
+oc start-build s2i-lab-app --follow --wait
+
+Find the latest build:
+
+oc get builds --sort-by=.metadata.creationTimestamp
+
+Inspect the ImageStream history:
+
+oc describe is/s2i-lab-app
+
+Check rollout status for a Deployment:
+
+oc rollout status deployment/s2i-lab-app
+
+If your workload is a DeploymentConfig:
+
+oc rollout status dc/s2i-lab-app
+
+Do not run the command for the wrong workload type.
+
+Step 2.8 - Prove the image used by a running pod
+
+List the pod:
+
+oc get pods
+
+Print its immutable image identifier:
+
+oc get pod <pod-name> -o jsonpath='{.status.containerStatuses[*].imageID}{"\n"}'
+
+What the command does
+
+imageID normally includes the registry digest. A digest is stronger evidence than a mutable tag such as latest.
+
+Evidence chain to record
+
+Git revision: _________________________________________________
+Build name: ___________________________________________________
+Build result: __________________________________________________
+Output image digest: ___________________________________________
+Deployment revision: ___________________________________________
+Running pod imageID: ___________________________________________
+
+Lab 2 knowledge check
+
+1. Why is a commit SHA better evidence than a branch name?
+2. What is contextDir used for?
+3. Does a successful webhook prove the application deployed successfully?
+4. Where should Git credentials be stored?
+5. Why might production promote a tested image instead of rebuilding a branch?
+
+======================================================================
+7. LAB 3 - APPLICATION SCALING: MANUAL AND AUTOMATIC
+======================================================================
+
+Objective
+
+Scale the application manually, verify that ready pods become Service endpoints, and configure or analyse an HPA.
+
+Step 3.1 - Inspect current replicas and resources
+
+For a Deployment:
+
+oc get deployment s2i-lab-app
+
+oc describe deployment s2i-lab-app
+
+For a DeploymentConfig, substitute dc for deployment.
+
+Record:
+
+Desired replicas: ______________________________________________
+Ready replicas: ________________________________________________
+CPU request: ___________________________________________________
+Memory request: ________________________________________________
+CPU limit: _____________________________________________________
+Memory limit: __________________________________________________
+
+Why resource requests matter
+
+The scheduler uses requests to place pods. A utilisation-based HPA also needs requests to calculate percentage utilisation. Missing or unrealistic requests can make HPA results unavailable or misleading.
+
+Step 3.2 - Scale manually to three replicas
+
+For a Deployment:
+
+oc scale deployment/s2i-lab-app --replicas=3
+
+For a DeploymentConfig:
+
+oc scale dc/s2i-lab-app --replicas=3
+
+What the command does
+
+It changes desired state to three replicas. The workload controller creates pods until actual state matches desired state.
+
+Watch the pods:
+
+oc get pods -w
+
+Press Ctrl+C when all three pods show Running and Ready.
+
+Verify workload state:
+
+oc get deployment s2i-lab-app
+
+Or:
+
+oc get dc s2i-lab-app
+
+Step 3.3 - Verify Service endpoints
+
+oc get endpointslice -l kubernetes.io/service-name=s2i-lab-app -o wide
+
+What the command does
+
+EndpointSlices list backend addresses selected for the Service. New pods normally appear only when they are eligible and ready for traffic.
+
+Expected result
+
+You should see addresses corresponding to ready replicas. The exact formatting depends on cluster version.
+
+Step 3.4 - Observe load distribution
+
+This step is most useful after the Route is created in Lab 4. If the application response exposes a pod hostname, make repeated requests and observe whether different replicas respond.
+
+Example after creating the Route:
+
+curl http://<route-host>
+
+Repeat the command several times.
+
+Important limitation
+
+Seeing the same result does not prove that load balancing failed. Sessions, keep-alive connections, router behaviour, or application output may hide replica identity.
+
+Step 3.5 - Return to two replicas before HPA
+
+oc scale deployment/s2i-lab-app --replicas=2
+
+Substitute dc if required.
+
+Step 3.6 - Check metrics availability
+
+oc top pods
+
+Expected result
+
+CPU and memory values appear for running pods. If metrics are unavailable, do not create an HPA for the practical portion. Continue with the design exercise.
+
+Step 3.7 - Inspect or add resource requests
+
+First inspect the existing configuration:
+
+oc get deployment s2i-lab-app -o yaml
+
+If the trainer authorises resource changes and the workload has no requests, example values can be set with:
+
+oc set resources deployment/s2i-lab-app --requests=cpu=50m,memory=128Mi --limits=cpu=250m,memory=256Mi
+
+What the command does
+
+It updates the pod template. This causes a rollout because future pods have different resource settings.
+
+Wait for the rollout:
+
+oc rollout status deployment/s2i-lab-app
+
+Do not use these example values as production sizing. Production requests and limits must be based on measurements and load testing.
+
+Step 3.8 - Create an HPA
+
+For a Deployment:
+
+oc autoscale deployment/s2i-lab-app --min=2 --max=5 --cpu-percent=70
+
+What the command does
+
+The HPA attempts to keep average CPU utilisation near 70 percent of requested CPU, while maintaining between two and five replicas.
+
+Inspect it:
+
+oc get hpa
+
+oc describe hpa/s2i-lab-app
+
+Fields to examine
+
+- Current and target utilisation.
+- Minimum and maximum replicas.
+- Current and desired replicas.
+- Conditions and events.
+
+Step 3.9 - Optional controlled-load demonstration
+
+Only perform this step using a trainer-approved load tool and endpoint. Do not run uncontrolled load against shared infrastructure.
+
+While load runs, observe:
+
+oc get hpa s2i-lab-app -w
+
+In another terminal:
+
+oc get pods -w
+
+Expected process
+
+1. Metrics rise.
+2. HPA calculates a higher desired replica count.
+3. Deployment creates pods.
+4. Scheduler places pods if capacity exists.
+5. Containers start and pass readiness.
+6. Ready endpoints join the Service.
+
+Autoscaling is not instantaneous. Metric collection, controller intervals, image pulling, startup, and readiness all add time.
+
+Step 3.10 - HPA design exercise
+
+Scenario
+
+Each pod requests 200m CPU and opens five database connections. The database permits 40 application connections. Normal availability requires two replicas. A pod takes 40 seconds to become Ready.
+
+Answer:
+
+1. What minimum replica count would you choose? Why?
+2. What maximum is possible before database connections become the constraint?
+3. Is CPU necessarily the best metric?
+4. What happens during the 40-second startup period?
+5. What other system might need scaling?
+
+Step 3.11 - Remove HPA before later manual changes, if instructed
+
+oc delete hpa s2i-lab-app
+
+What the command does
+
+It removes automatic replica control. If you leave the HPA active, it may overwrite later manual replica choices.
+
+Return to one replica for the next lab if cluster quota is limited:
+
+oc scale deployment/s2i-lab-app --replicas=1
+
+Lab 3 knowledge check
+
+1. What is the difference between desired and ready replicas?
+2. Why do CPU-based HPAs need CPU requests?
+3. Does adding pods guarantee proportional throughput?
+4. What makes a new pod eligible for Service traffic?
+5. How is application autoscaling different from cluster autoscaling?
+
+======================================================================
+8. LAB 4 - CONFIGURING ROUTES AND SERVICE EXPOSURE
+======================================================================
+
+Objective
+
+Inspect the Service created for the application, validate selector and port mappings, create a Route, enable TLS where appropriate, and test the request path layer by layer.
+
+Step 4.1 - Inspect the Service
+
+oc get service s2i-lab-app
+
+oc describe service s2i-lab-app
+
+What to identify
+
+- Service type, normally ClusterIP.
+- Cluster IP.
+- Selector.
+- Service port.
+- Target port.
+- Endpoints.
+
+Print only the selector:
+
+oc get service s2i-lab-app -o jsonpath='{.spec.selector}{"\n"}'
+
+Print pod labels:
+
+oc get pods --show-labels
+
+Process being performed
+
+The Service uses its selector to find pods with matching labels. It forwards traffic from the Service port to targetPort on those pods. Pod IPs may change; the Service name and virtual endpoint remain stable.
+
+Step 4.2 - Verify EndpointSlices
+
+oc get endpointslice -l kubernetes.io/service-name=s2i-lab-app -o yaml
+
+Look for:
+
+- Backend addresses.
+- Port values.
+- ready conditions.
+- Target pod references.
+
+If no endpoints exist, stop and diagnose selectors, readiness, or pod status before creating a Route.
+
+Step 4.3 - Create a basic Route
+
+oc expose service/s2i-lab-app
+
+What the command does
+
+It creates an OpenShift Route targeting the Service. The ingress controller/router can then accept requests for the Route host and forward them to the Service.
+
+Inspect the Route:
+
+oc get route s2i-lab-app
+
+oc describe route s2i-lab-app
+
+What to identify
+
+- Hostname.
+- Target Service.
+- Target port.
+- TLS configuration.
+- Admission status.
+
+Route existence alone is not enough. Admission status shows whether an ingress controller accepted it.
+
+Step 4.4 - Retrieve the hostname
+
+oc get route s2i-lab-app -o jsonpath='{.spec.host}{"\n"}'
+
+Copy the value into your notes:
+
+Route host: _____________________________________________________
+
+Step 4.5 - Test external access
+
+For an HTTP Route:
+
+curl -i http://<route-host>
+
+What the options mean
+
+-i includes response headers so you can see the status code and redirects.
+
+Expected result
+
+An HTTP success response and application content. If curl is unavailable, open the host in a browser.
+
+Step 4.6 - Create or replace with an edge TLS Route
+
+If the workshop platform supplies a default ingress certificate, create a separate edge Route or replace the basic Route according to trainer instructions.
+
+Delete only the lab Route if replacement is required:
+
+oc delete route s2i-lab-app
+
+Create an edge-terminated Route with HTTP redirect:
+
+oc create route edge s2i-lab-app --service=s2i-lab-app --insecure-policy=Redirect
+
+What the command does
+
+- edge tells the router to terminate client TLS.
+- --service chooses the backend Service.
+- --insecure-policy=Redirect redirects HTTP clients to HTTPS.
+
+Inspect TLS configuration:
+
+oc get route s2i-lab-app -o yaml
+
+Test redirect behaviour:
+
+curl -I http://<route-host>
+
+Expected result
+
+An HTTP redirect response whose Location points to HTTPS.
+
+Test HTTPS:
+
+curl -I https://<route-host>
+
+Do not disable certificate verification in a production procedure. In a lab with a known training certificate, follow trainer guidance.
+
+Step 4.7 - Compare TLS modes
+
+Edge
+
+Client -> TLS -> Router -> HTTP -> Pod
+
+Re-encrypt
+
+Client -> TLS -> Router -> separate TLS connection -> Pod
+
+Passthrough
+
+Client -> TLS bytes through Router -> Pod terminates TLS
+
+Discussion questions
+
+1. Where is the private key used in each model?
+2. Which model protects traffic from router to backend with TLS?
+3. Which model requires the backend application to terminate client TLS?
+4. Why is path-based HTTP routing limited with passthrough?
+
+Step 4.8 - Controlled failure: Service selector mismatch
+
+Before making a change, record the original selector:
+
+oc get service s2i-lab-app -o yaml
+
+Save the original selector in your notes.
+
+Introduce the lab fault:
+
+oc patch service s2i-lab-app --type=merge -p '{"spec":{"selector":{"app":"does-not-exist"}}}'
+
+Observe the effect:
+
+oc get endpointslice -l kubernetes.io/service-name=s2i-lab-app
+
+curl -I https://<route-host>
+
+Expected symptom
+
+The EndpointSlice contains no usable backend addresses, and the router commonly returns 503 because the Route has no available application endpoint.
+
+Diagnose with evidence:
+
+oc get pods --show-labels
+
+oc get service s2i-lab-app -o yaml
+
+oc get endpointslice -l kubernetes.io/service-name=s2i-lab-app -o yaml
+
+Correct the selector
+
+Use the actual label shown on your pods. A common generated label may be app=s2i-lab-app, but verify rather than assume:
+
+oc patch service s2i-lab-app --type=merge -p '{"spec":{"selector":{"app":"s2i-lab-app"}}}'
+
+If your original selector included different or additional labels, restore the exact original selector.
+
+Prove recovery:
+
+oc get endpointslice -l kubernetes.io/service-name=s2i-lab-app -o wide
+
+curl -I https://<route-host>
+
+Recovery is complete only when endpoints return and the user-facing request succeeds.
+
+Lab 4 knowledge check
+
+1. Why should external clients not call pod IP addresses directly?
+2. What is the difference between port and targetPort?
+3. What does Route admission mean?
+4. Why can a Route return 503 even when pods are Running?
+5. Which TLS termination mode leaves TLS termination to the pod?
+
+======================================================================
+9. LAB 5 - READINESS, LIVENESS, AND STARTUP PROBES
+======================================================================
+
+Objective
+
+Configure health probes, observe how they affect pod readiness and restarts, and learn to select safe probe endpoints and timing values.
+
+Important preparation
+
+Confirm which endpoints the selected application actually exposes. Do not assume /ready or /health exists. For the public sample repository, your trainer may provide valid paths or ask you to use a TCP probe.
+
+Record application information:
+
+Application port: _______________________________________________
+Readiness path or mechanism: ___________________________________
+Liveness path or mechanism: ____________________________________
+
+Step 5.1 - Inspect current probes
+
+oc get deployment s2i-lab-app -o yaml
+
+Look under:
+
+spec.template.spec.containers[].readinessProbe
+spec.template.spec.containers[].livenessProbe
+spec.template.spec.containers[].startupProbe
+
+If the resource is a DeploymentConfig, substitute dc/s2i-lab-app.
+
+Step 5.2 - Choose the right mechanism
+
+HTTP GET asks an application endpoint for an HTTP status.
+TCP socket proves that a port accepts a connection.
+Exec runs a command inside the container.
+gRPC uses the gRPC health protocol when supported.
+
+For this lab, use the endpoint and port supplied by the trainer. An HTTP probe example is shown below.
+
+Step 5.3 - Add readiness using CLI
+
+Check the syntax supported by your installed client:
+
+oc set probe --help
+
+Example pattern:
+
+oc set probe deployment/s2i-lab-app --readiness --get-url=http://:<application-port>/<readiness-path> --initial-delay-seconds=5 --period-seconds=10 --timeout-seconds=2 --failure-threshold=3
+
+What the command does
+
+It updates the pod template with a readiness probe. The update starts a rollout. A container that repeatedly fails readiness stays running but the pod is removed from normal Service traffic.
+
+Wait for rollout:
+
+oc rollout status deployment/s2i-lab-app
+
+Inspect probe configuration:
+
+oc get deployment s2i-lab-app -o yaml
+
+Observe readiness:
+
+oc get pods -w
+
+Step 5.4 - Verify ready endpoints
+
+oc get endpointslice -l kubernetes.io/service-name=s2i-lab-app -o wide
+
+Expected result
+
+When the probe succeeds, the pod Ready condition is true and its address is available through the Service.
+
+Step 5.5 - Add liveness
+
+Only use an endpoint that indicates whether restarting the local container is appropriate.
+
+Example pattern:
+
+oc set probe deployment/s2i-lab-app --liveness --get-url=http://:<application-port>/<liveness-path> --initial-delay-seconds=15 --period-seconds=10 --timeout-seconds=2 --failure-threshold=3
+
+Wait for rollout and inspect:
+
+oc rollout status deployment/s2i-lab-app
+
+oc describe pod <new-pod-name>
+
+Why the initial delay differs
+
+Liveness should not restart the application during normal startup. A startup probe is often a better solution for genuinely slow applications.
+
+Step 5.6 - Optional startup probe
+
+Example pattern:
+
+oc set probe deployment/s2i-lab-app --startup --get-url=http://:<application-port>/<startup-path> --period-seconds=5 --failure-threshold=30
+
+What the command does
+
+The application gets up to approximately 150 seconds of repeated startup checks. Readiness and liveness take over only after startup succeeds.
+
+Step 5.7 - Observe probe events
+
+oc describe pod <pod-name>
+
+Look at:
+
+- Ready condition.
+- Restart count.
+- Last State.
+- Events mentioning probe success or failure.
+
+View logs:
+
+oc logs <pod-name>
+
+After a restart, inspect the terminated container:
+
+oc logs <pod-name> --previous
+
+Step 5.8 - Controlled failure: incorrect readiness path
+
+First record the correct readiness configuration.
+
+Introduce an invalid path:
+
+oc set probe deployment/s2i-lab-app --readiness --get-url=http://:<application-port>/path-that-does-not-exist --period-seconds=5 --timeout-seconds=2 --failure-threshold=2
+
+Watch the new pod:
+
+oc get pods -w
+
+Inspect evidence:
+
+oc describe pod <new-pod-name>
+
+oc get endpointslice -l kubernetes.io/service-name=s2i-lab-app -o wide
+
+Expected observations
+
+- Container process may be Running.
+- Pod Ready condition becomes false.
+- Probe event reports an unsuccessful response, often HTTP 404.
+- The pod is removed from usable Service endpoints.
+- The container is not restarted merely because readiness fails.
+
+Restore the correct readiness probe:
+
+oc set probe deployment/s2i-lab-app --readiness --get-url=http://:<application-port>/<correct-readiness-path> --initial-delay-seconds=5 --period-seconds=10 --timeout-seconds=2 --failure-threshold=3
+
+Verify recovery:
+
+oc rollout status deployment/s2i-lab-app
+
+oc get pods
+
+oc get endpointslice -l kubernetes.io/service-name=s2i-lab-app -o wide
+
+curl -I https://<route-host>
+
+Step 5.9 - Probe design exercise
+
+Classify each check and explain your choice:
+
+1. The local event loop responds.
+2. The application has loaded mandatory configuration.
+3. A shared database is temporarily unavailable.
+4. Every external payment provider is reachable.
+5. A slow Java application has not finished initialising.
+
+Remember
+
+Readiness asks whether the pod should receive traffic.
+Liveness asks whether restarting the container is the correct recovery.
+Startup asks whether normal health evaluation should begin.
+
+Lab 5 knowledge check
+
+1. Which probe controls Service traffic eligibility?
+2. Which probe can restart a container?
+3. Why is a database check risky as liveness?
+4. Why use startupProbe instead of a very large liveness delay?
+5. Why are previous logs important after a restart?
+
+======================================================================
+10. LAB 6 - DEBUGGING CONTAINERS WITH CLI AND UI TOOLS
+======================================================================
+
+Objective
+
+Apply a repeatable troubleshooting process to workload, container, network, and build failures using both CLI and Web Console evidence.
+
+Diagnostic method
+
+For every incident:
+
+1. State the symptom and scope.
+2. Capture current state.
+3. Inspect events.
+4. Read the correct logs.
+5. Compare desired configuration with observed state.
+6. Form one evidence-based hypothesis.
+7. Apply one correction.
+8. Prove complete recovery.
+
+Step 6.1 - Capture a healthy baseline
+
+oc get deployment,replicaset,pods,service,route
+
+oc get pods -o wide
+
+oc get events --sort-by=.lastTimestamp
+
+Record:
+
+Workload replicas: ______________________________________________
+Healthy pod name: _______________________________________________
+Pod restart count: ______________________________________________
+Service endpoints: ______________________________________________
+Route response: __________________________________________________
+
+Why capture a baseline
+
+Troubleshooting is easier when you know what normal looks like. Baselines make changed replica counts, image digests, endpoints, restarts, and response codes visible.
+
+Step 6.2 - Inspect application logs
+
+oc logs <pod-name>
+
+Follow logs:
+
+oc logs -f <pod-name>
+
+For a multi-container pod:
+
+oc logs <pod-name> -c <container-name>
+
+For a previous terminated container:
+
+oc logs <pod-name> --previous
+
+Question answered
+
+What did the application process write to standard output or error?
+
+Step 6.3 - Describe the pod
+
+oc describe pod <pod-name>
+
+Question answered
+
+What configuration, status, conditions, container states, and platform events are associated with this pod?
+
+Important fields
+
+- Node assignment.
+- Image and image ID.
+- Container command and arguments.
+- Environment sources.
+- Resource requests and limits.
+- Probe configuration.
+- Current and previous state.
+- Exit code and termination reason.
+- Restart count.
+- Events.
+
+Step 6.4 - Execute a diagnostic command
+
+If the image includes a shell:
+
+oc rsh <pod-name>
+
+Run one command without an interactive shell:
+
+oc exec <pod-name> -- printenv
+
+What the commands do
+
+oc rsh opens a remote shell inside the container. oc exec runs a selected command. Minimal images may have no shell or diagnostic tools; this is intentional in many secure images.
+
+Security rules
+
+- Do not print Secret values in a shared lab.
+- Do not install packages into a running application container.
+- Do not edit application files inside a running pod as a “fix.”
+- Treat container changes as ephemeral and non-reproducible.
+
+Step 6.5 - Use the Web Console
+
+1. Open the Developer perspective.
+2. Select the correct project.
+3. Open Topology.
+4. Select s2i-lab-app.
+5. Review Resources and Details.
+6. Open the pod.
+7. Review Logs, Events, Metrics, YAML, and Terminal if available.
+8. Open Builds and inspect build history and logs.
+9. Compare the UI observations with the CLI output.
+
+What the UI contributes
+
+Topology makes resource relationships visible. Events and pod status expose lifecycle failures. Metrics show CPU and memory trends. YAML shows desired configuration. CLI remains valuable for exact queries and repeatable evidence.
+
+Step 6.6 - Controlled failure: CrashLoopBackOff or startup failure
+
+This exercise changes the container command. Record the original Deployment YAML first:
+
+oc get deployment s2i-lab-app -o yaml
+
+Do not redirect this output into an unmanaged location containing sensitive values. The trainer may provide a safe backup manifest.
+
+Introduce a deliberately failing command only if the trainer authorises it:
+
+oc set env deployment/s2i-lab-app LAB_FORCE_FAILURE=true
+
+This environment variable causes a failure only if the training application was designed to respond to it. If it is not, use the trainer-supplied failure method. Do not invent a production mutation.
+
+Watch the rollout:
+
+oc get pods -w
+
+Gather evidence:
+
+oc describe pod <failing-pod-name>
+
+oc logs <failing-pod-name>
+
+oc logs <failing-pod-name> --previous
+
+Interpretation guidance
+
+CrashLoopBackOff is a backoff condition after repeated container exits. It is not the root cause. The root cause is indicated by logs, exit code, termination reason, missing configuration, probe events, or application behaviour.
+
+Restore the application:
+
+oc set env deployment/s2i-lab-app LAB_FORCE_FAILURE-
+
+What the trailing hyphen does
+
+It removes that environment variable from the Deployment pod template.
+
+Verify recovery:
+
+oc rollout status deployment/s2i-lab-app
+
+oc get pods
+
+oc get route s2i-lab-app
+
+curl -I https://<route-host>
+
+Step 6.7 - Diagnose a Pending pod scenario without changing the cluster
+
+If the trainer provides a Pending pod, begin with:
+
+oc describe pod <pending-pod-name>
+
+oc get events --sort-by=.lastTimestamp
+
+Why logs may not help
+
+If the pod was never scheduled or the container never started, there may be no application logs. Events are the primary evidence for insufficient CPU/memory, quota, volume binding, affinity, taints, or admission failures.
+
+Step 6.8 - Diagnose an image-pull scenario
+
+Typical statuses include ErrImagePull and ImagePullBackOff.
+
+Commands:
+
+oc describe pod <pod-name>
+
+oc get events --sort-by=.lastTimestamp
+
+Check:
+
+- Registry hostname.
+- Repository and image tag.
+- Pull-secret association.
+- Registry permissions.
+- Network reachability.
+- Whether the image exists.
+
+Do not respond by making a private registry public.
+
+Step 6.9 - Diagnose a network path
+
+Use this order:
+
+1. Is the application process running and listening?
+2. Is the pod Ready?
+3. Do Service selectors match pod labels?
+4. Are EndpointSlices populated?
+5. Can an approved in-cluster test pod call Service DNS?
+6. Is the Route admitted and targeting the correct Service port?
+7. Does DNS resolve externally?
+8. Is TLS valid for the host and termination model?
+
+Commands:
+
+oc get pods --show-labels
+
+oc describe service s2i-lab-app
+
+oc get endpointslice -l kubernetes.io/service-name=s2i-lab-app
+
+oc describe route s2i-lab-app
+
+Step 6.10 - Complete an evidence log
+
+For one failure, record:
+
+Time: ___________________________________________________________
+Symptom: ________________________________________________________
+Affected users/resources: ______________________________________
+Command or UI view: _____________________________________________
+Observed evidence: ______________________________________________
+What the evidence proves: ______________________________________
+Hypothesis: _____________________________________________________
+Correction: _____________________________________________________
+Proof of recovery: ______________________________________________
+Preventive action: ______________________________________________
+
+Lab 6 knowledge check
+
+1. Why are events more useful than application logs for an unscheduled pod?
+2. What does --previous retrieve?
+3. Why might oc rsh fail on a healthy container?
+4. How do you distinguish mitigation from root cause?
+5. What evidence proves that a Route-to-pod path is fully restored?
+
+======================================================================
+11. REFLECTION AND REVIEW - INTEGRATED PRACTICE SESSION
+======================================================================
+
+Objective
+
+Deploy, validate, diagnose, and recover an application using the complete Day02 mental model.
+
+Recommended format
+
+Work in pairs.
+
+Driver: Runs commands.
+Navigator: Reads steps, challenges assumptions, and checks safety.
+
+Swap roles halfway through.
+
+Practice scenario
+
+Your team owns s2i-lab-app. Users report that the application is unavailable after a recent configuration change. The source repository and previous build are believed to be correct, but this has not been proven.
+
+Your goal is not to guess the fault. Your goal is to produce a defensible evidence chain.
+
+Phase 1 - Establish scope
+
+Answer before changing anything:
+
+1. Is the problem build-time, deployment-time, runtime, or access-related?
+2. Is every replica affected?
+3. Is the Service available internally?
+4. Is only external access affected?
+5. What changed most recently?
+
+Baseline commands:
+
+oc get bc,build,is,deployment,dc,replicaset,pods,service,route
+
+oc get events --sort-by=.lastTimestamp
+
+Phase 2 - Trace the delivery chain
+
+Build:
+
+oc get builds
+
+oc logs build/<latest-build-name>
+
+Image:
+
+oc describe is/s2i-lab-app
+
+Deployment:
+
+oc rollout status deployment/s2i-lab-app
+
+oc rollout history deployment/s2i-lab-app
+
+Pod:
+
+oc describe pod <pod-name>
+
+oc logs <pod-name>
+
+oc logs <pod-name> --previous
+
+Service:
+
+oc describe service s2i-lab-app
+
+oc get endpointslice -l kubernetes.io/service-name=s2i-lab-app
+
+Route:
+
+oc describe route s2i-lab-app
+
+curl -I https://<route-host>
+
+Do not run every command mechanically. Choose the next command based on the current evidence.
+
+Phase 3 - Trainer-injected fault
+
+The trainer assigns one of these faults:
+
+Fault A: Service selector matches no pods.
+Likely symptom: Route 503 and empty Service endpoints.
+
+Fault B: Readiness path is incorrect.
+Likely symptom: Pod Running but not Ready; endpoints removed.
+
+Fault C: Required training environment variable is absent.
+Likely symptom: Application exits or returns an error.
+
+Fault D: Build uses a non-existent Git reference or context directory.
+Likely symptom: Build Failed; existing application may continue running.
+
+Fault E: Resource request cannot be scheduled within quota/capacity.
+Likely symptom: New pod remains Pending.
+
+Fault F: Deployment image did not update after a new Build.
+Likely symptom: Build Complete but pod imageID remains old.
+
+Phase 4 - Correct one confirmed cause
+
+Before applying a change, state:
+
+Our confirmed cause is: _________________________________________
+
+The evidence that confirms it is: ______________________________
+
+The smallest safe correction is: _______________________________
+
+Only then make the correction.
+
+Phase 5 - Prove recovery
+
+Recovery must include all applicable checks:
+
+- Latest build is Complete.
+- Expected image digest is available.
+- Rollout completes.
+- Required replicas are Ready.
+- Restart count is stable.
+- Service has ready endpoints.
+- Route is admitted.
+- External request succeeds.
+- Application displays the expected version.
+
+Phase 6 - Deliver a 60-second incident report
+
+Use this structure:
+
+Symptom:
+Impact:
+Key evidence:
+Root cause:
+Correction:
+Proof of recovery:
+Prevention:
+
+Example
+
+Symptom: The application Route returned HTTP 503.
+Impact: No external users could reach the application.
+Evidence: The Route was admitted, but the Service EndpointSlice had zero addresses. Running pods used app=s2i-lab-app while the Service selector used app=incorrect.
+Root cause: A configuration change introduced a Service selector mismatch.
+Correction: Restored the selector from the reviewed application manifest.
+Proof: EndpointSlice repopulated and the Route returned HTTP 200 with the expected application version.
+Prevention: Manage Service configuration through reviewed Git changes and alert on Services with no ready endpoints.
+
+Final reflection questions
+
+1. Which resource relationship became clearest during the lab?
+2. Which command produced the most decisive evidence?
+3. Which assumption did the evidence confirm or disprove?
+4. How did readiness influence networking behaviour?
+5. How would the investigation change if ten replicas were affected differently?
+6. What evidence would you retain for a real incident?
+7. Which configuration should be stored in Git for repeatability?
+8. What would you monitor proactively?
+
+======================================================================
+12. OPTIONAL CHALLENGES
+======================================================================
+
+Challenge 1 - Verify immutable deployment evidence
+
+Record the Git commit, Build name, ImageStream image digest, deployment revision, and pod imageID. Explain how they form a provenance chain.
+
+Challenge 2 - Compare CLI and UI
+
+Find the same probe failure using both oc describe pod and Web Console Events. Record which interface makes the relationship clearer and which produces more precise shareable evidence.
+
+Challenge 3 - Design a production HPA
+
+Propose min/max replicas, metric, target, scale-up risk, scale-down risk, and downstream capacity checks for a real application. Explain why CPU may or may not be the correct metric.
+
+Challenge 4 - Secure exposure review
+
+Decide whether the application requires no Route, an internal-only Route, or external exposure. Recommend TLS termination, authentication, and network controls.
+
+Challenge 5 - Rollback discussion
+
+Inspect rollout history:
+
+oc rollout history deployment/s2i-lab-app
+
+Explain what this command would do, but do not run it unless authorised:
+
+oc rollout undo deployment/s2i-lab-app
+
+Discuss why workload rollback does not automatically reverse database migrations or external state changes.
+
+======================================================================
+13. CLEANUP
+======================================================================
+
+Cleanup prevents unused builds, images, pods, and Routes from consuming shared workshop resources.
+
+Before deleting anything, verify the active project:
+
+oc project
+
+List the lab resources:
+
+oc get all
+
+oc get bc,is,hpa,route
+
+Option A - Trainer authorises deletion of the entire dedicated lab project
+
+Only use this option if the project was created exclusively for this lab and the trainer explicitly authorises project deletion:
+
+oc delete project day02-<your-id>
+
+What the command does
+
+It requests deletion of the project and all namespaced resources inside it. This is a destructive action and may not be reversible.
+
+Option B - Keep the project and remove only lab resources
+
+Delete the application resources by label only after checking which objects carry the label:
+
+oc get all -l app=s2i-lab-app
+
+Follow trainer instructions for precise deletion. Resource generators do not always apply identical labels to every object, so confirm the targets first.
+
+Verify cleanup:
+
+oc get all
+
+======================================================================
+14. FINAL LAB SUMMARY
+======================================================================
+
+You completed the full application path:
+
+1. Logged in and created an isolated project.
+2. Discovered an S2I builder.
+3. Built application source from Git.
+4. Inspected BuildConfig, Build, ImageStream, and runtime workload.
+5. Traced source revision to image and pod.
+6. Scaled replicas manually and examined automatic scaling.
+7. Validated Service selectors, ports, and EndpointSlices.
+8. Created and tested an OpenShift Route.
+9. Configured readiness, liveness, and startup behaviour.
+10. Used CLI and Web Console evidence to troubleshoot failures.
+11. Presented an incident summary with proof of recovery.
+
+The central operational lesson is:
+
+A successful OpenShift deployment is not simply a Running pod. It is a traceable source build, a known image, a completed rollout, ready replicas, valid Service endpoints, correctly configured exposure, appropriate scaling, meaningful health signals, and verified user access.

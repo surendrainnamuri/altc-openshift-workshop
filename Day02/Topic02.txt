@@ -1,0 +1,269 @@
+DEPLOYING APPLICATIONS WITH GIT INTEGRATION
+
+Workshop objective
+Attendees will learn how OpenShift consumes code from Git, how branches and credentials are configured, how builds are triggered, and how a source change becomes a new application rollout.
+
+1. Why Git integration matters
+
+Git is the system of record for application source and, in mature teams, deployment configuration. OpenShift can retrieve source directly from a Git repository and use a BuildConfig to create an image. Webhooks or pipelines can then automate delivery after a commit.
+
+A basic integrated flow is:
+
+Git push -> webhook/manual trigger -> Build -> ImageStreamTag -> Deployment rollout -> Pods
+
+This is not automatically a complete production CI/CD solution. Production delivery usually adds tests, image scanning, approvals, environment promotion, and rollback controls through OpenShift Pipelines or another CI/CD platform.
+
+2. Prerequisites
+
+- Access to an OpenShift project.
+- A Git repository containing a buildable application.
+- A suitable S2I builder or a Dockerfile/Containerfile.
+- Network connectivity from the build pod to the Git server.
+- A Secret if the repository is private.
+- An understood branch, tag, or commit to deploy.
+
+Confirm the current identity and project:
+
+oc whoami
+oc project
+
+3. Deploying from a public Git repository
+
+Using an S2I builder:
+
+oc new-app nodejs:20~https://github.com/<organisation>/<repository>.git --name=git-app
+
+Using a repository that contains a Dockerfile/Containerfile:
+
+oc new-build https://github.com/<organisation>/<repository>.git --name=git-app --strategy=docker
+
+Then inspect what OpenShift created:
+
+oc get bc,build,is,deployment,service,pods
+oc describe bc/git-app
+oc logs -f bc/git-app
+
+With oc new-app, resource generation depends on the input and cluster version. Always inspect the generated objects instead of assuming the exact result.
+
+4. Selecting a branch or context directory
+
+To build a specific branch, append a Git reference:
+
+oc new-app nodejs:20~https://github.com/<organisation>/<repository>.git#develop --name=git-app
+
+For a monorepo, set the context directory so the build uses the correct subfolder:
+
+oc patch bc/git-app --type=merge -p '{"spec":{"source":{"contextDir":"services/api"}}}'
+
+Verify the source configuration:
+
+oc get bc/git-app -o yaml
+
+For reproducible releases, production workflows should promote a tested image or build from an immutable tag/commit rather than following a moving development branch without controls.
+
+5. Accessing a private repository
+
+Create a source Secret using an approved credential method. SSH keys are shown here as an example:
+
+oc create secret generic git-source-secret --from-file=ssh-privatekey=<path-to-private-key> --type=kubernetes.io/ssh-auth
+
+Associate it with the build service account when appropriate:
+
+oc secrets link builder git-source-secret
+
+Or set sourceSecret in the BuildConfig:
+
+spec:
+  source:
+    git:
+      uri: git@github.com:<organisation>/<repository>.git
+    sourceSecret:
+      name: git-source-secret
+
+Security guidance:
+
+- Prefer short-lived tokens or narrowly scoped deploy keys.
+- Never place credentials inside the Git URL, source code, or BuildConfig.
+- Restrict Secret access with RBAC.
+- Manage host keys and CA certificates according to platform policy.
+- Rotate credentials and test revocation procedures.
+
+6. Triggering builds from Git
+
+Manual build:
+
+oc start-build git-app --follow
+
+Webhook-driven build:
+
+oc describe bc/git-app
+
+The BuildConfig can expose a GitHub, GitLab, Bitbucket, or generic webhook URL depending on configuration and platform support. Configure that URL in the Git provider and protect its secret token. A webhook means “a change occurred”; build configuration still determines which source is fetched.
+
+Test by making a small commit, pushing it, and observing:
+
+oc get builds -w
+
+In another terminal:
+
+oc get pods -w
+
+This demonstrates the difference between a build event and a deployment rollout.
+
+7. From new image to running application
+
+After a successful build, the output is pushed to an image registry and represented by an ImageStreamTag. An image-change trigger or deployment automation can roll out the new version.
+
+Inspect the image history:
+
+oc describe is/git-app
+oc get istag
+
+Inspect deployment progress:
+
+oc rollout status deployment/git-app
+oc rollout history deployment/git-app
+
+If the application uses a DeploymentConfig in an older environment:
+
+oc rollout status dc/git-app
+
+Do not mix Deployment and DeploymentConfig commands; first identify the workload type with oc get deployment,dc.
+
+8. Exposing and validating the application
+
+Create a Route for an existing Service:
+
+oc expose service/git-app
+oc get route/git-app
+
+Retrieve only the hostname:
+
+oc get route/git-app -o jsonpath='{.spec.host}{"\n"}'
+
+Test the endpoint with a browser or curl. Then confirm the response corresponds to the new commit—for example by displaying an application version or commit identifier.
+
+9. Common failure scenarios
+
+Repository not found or authentication failed: Check URL format, credentials, Secret linkage, branch permissions, and Git provider logs.
+
+Webhook does not trigger: Confirm the webhook URL, secret, event type, delivery status, and external reachability of the OpenShift API endpoint.
+
+Wrong branch built: Inspect spec.source.git.ref and the build logs.
+
+Build succeeds but old version runs: Check the ImageStreamTag, deployment image/change trigger, rollout status, and pod image digest.
+
+Monorepo build cannot find files: Verify contextDir and repository layout.
+
+Useful diagnostic commands:
+
+oc describe bc/git-app
+oc get builds
+oc logs build/<build-name>
+oc describe is/git-app
+oc rollout history deployment/git-app
+oc get events --sort-by=.lastTimestamp
+
+10. Trainer demonstration
+
+1. Review a simple Git repository.
+2. Deploy the selected branch with oc new-app.
+3. Follow build logs and identify the output image.
+4. Expose the service and test the route.
+5. Change a visible application value and push a commit.
+6. trigger a build manually or through a webhook.
+7. Watch the new rollout and verify the changed response.
+8. Show where failure evidence appears in both CLI and Web Console.
+
+Knowledge check
+
+- Why should credentials be stored in a Secret?
+- What is the purpose of contextDir?
+- Does a successful Git webhook prove that the build succeeded?
+- How can you prove which image digest a pod is running?
+- Why promote a tested image instead of rebuilding independently in every environment?
+
+Trainer closing line
+
+Git integration connects developer activity to repeatable platform builds. The important operational skill is tracing one change through every stage: commit, build, image, rollout, pod, and user-visible result.
+
+EXTENDED FACILITATOR NOTES
+
+Recommended teaching time: 30 minutes
+Suggested balance: 10 minutes explanation, 10 minutes demonstration, 7 minutes paired activity, 3 minutes review.
+
+The three Git integration models
+
+Explain that teams commonly use one of three patterns:
+
+1. OpenShift-native source build: BuildConfig clones Git and creates the image.
+2. External CI: Another system tests/builds the image and pushes it to a registry; OpenShift deploys the approved image.
+3. GitOps: Git stores desired deployment configuration; a controller reconciles the cluster to that state.
+
+These patterns can coexist. Avoid presenting oc new-app as the complete enterprise delivery model. It is an excellent way to understand the primitives and to bootstrap applications.
+
+Branch, tag, commit, and environment
+
+A branch is convenient but mutable. A Git tag may also be movable unless protected. A commit SHA is immutable and therefore stronger evidence of exactly what was built. A mature application should expose build information such as version and commit SHA without leaking sensitive details.
+
+Ask participants: “If production is rebuilt from the same branch one week later, is it guaranteed to produce the same image?” Expected answer: not necessarily—dependencies, builder images, package repositories, or the branch itself may have changed. This leads naturally to immutable image promotion.
+
+Private repository walkthrough
+
+Explain the authentication path without showing credentials:
+
+Build pod -> source Secret -> Git server
+
+Demonstrate Secret metadata and BuildConfig reference only. Point out that linking a Secret to a service account and referencing sourceSecret serve different purposes depending on the workflow. Use least privilege and organisation-approved credential types.
+
+Webhook teaching sequence
+
+1. Show the BuildConfig webhook trigger.
+2. Show the Git provider delivery configuration.
+3. Push a small commit.
+4. Watch a new Build appear.
+5. Inspect delivery status if nothing happens.
+6. Prove which commit the Build used.
+
+Emphasise that a webhook returning success only proves receipt of the event. Build, image push, and rollout can still fail independently.
+
+End-to-end proof checklist
+
+Ask participants to collect:
+
+- Git commit SHA.
+- Build name and Complete status.
+- Output image digest.
+- Deployment revision.
+- Pod imageID.
+- User-visible version from the Route.
+
+This creates a chain of evidence instead of relying on timestamps or visual assumptions.
+
+Paired activity
+
+Partner A plays the developer and identifies a commit. Partner B plays the operator and proves whether that commit reached the running application. They must use at least three cluster resources in their explanation.
+
+Failure conversation
+
+Present these symptoms one at a time and ask which layer owns the evidence:
+
+- Webhook delivery failed: Git provider/network/API endpoint.
+- Build could not clone: Build/source authentication.
+- Build compiled but image push failed: Registry/output credentials or quota.
+- Image exists but no rollout occurred: image trigger/deployment automation.
+- Rollout completed but application shows old content: caching, wrong branch/context, or misleading application version.
+
+Operational practices to reinforce
+
+- Protect main and release branches.
+- Keep environment configuration outside application source where appropriate.
+- Do not embed credentials in clone URLs.
+- Record provenance from source commit to image digest.
+- Test before promotion.
+- Use separate service accounts and permissions for build and runtime responsibilities.
+- Define a rollback path before automating forward deployment.
+
+Transition to Topic 3
+
+“The new version is running. The next question is whether one instance is enough—and what must be true before adding more copies is safe.”
