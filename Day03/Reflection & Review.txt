@@ -1,0 +1,269 @@
+REFLECTION & REVIEW - CI/CD EXERCISE AND REVIEW DISCUSSION
+
+Purpose
+
+This attendee-led review consolidates Day03 into one delivery story. You will explain the resources, inspect evidence from a run, diagnose realistic failures, and decide how to improve the workflow. Use it after completing Lab03 or as a future recall guide.
+
+Recommended duration: 60-90 minutes
+Suggested format: Individuals or groups of two or three
+
+Learning outcomes
+
+You should be able to:
+
+- Trace Git event -> Trigger -> PipelineRun -> TaskRuns -> pods -> image -> deployment.
+- Explain where BuildConfig fits when it is used.
+- Distinguish configuration inputs, shared files, results, credentials, and artifacts.
+- Interpret a failed run using conditions, logs, and events.
+- Identify security and reproducibility risks.
+- present a concise CI/CD evidence report.
+
+======================================================================
+PART 1 - DRAW THE DELIVERY CHAIN
+======================================================================
+
+Without looking at notes, complete this chain and annotate the identity used at each stage:
+
+Git push
+  -> ____________________ validates and filters the event
+  -> ____________________ extracts repository and commit fields
+  -> ____________________ creates a run from a blueprint
+  -> ____________________ instantiates the Pipeline
+  -> ____________________ execute individual Tasks
+  -> step ____________________ run in pods
+  -> immutable image ____________________ is recorded
+  -> Deployment rolls out the tested artifact
+
+Expected concepts: EventListener/interceptor, TriggerBinding, TriggerTemplate, PipelineRun, TaskRuns, containers, and digest.
+
+If BuildConfig is used, add:
+
+Pipeline Task -> oc start-build -> BuildConfig -> Build -> ImageStreamTag/digest
+
+Discussion
+
+- Which objects are reusable definitions?
+- Which objects are one-time execution records?
+- Where can duplication occur if both webhook models are enabled?
+- Which transition is an approval or policy boundary?
+
+======================================================================
+PART 2 - RESOURCE IDENTIFICATION
+======================================================================
+
+Match each requirement to the best mechanism:
+
+1. Git URL requested by the caller
+2. Cloned source shared with test and build tasks
+3. Exact commit discovered by clone
+4. Registry password
+5. Large test report
+6. Reusable ordered steps
+7. One execution of the delivery graph
+8. Workload API identity
+
+Choices: parameter, workspace, result, Secret, artifact store, Task, PipelineRun, ServiceAccount.
+
+Explain why a registry password must not be a parameter or result. Explain why a 50 MB report should not be a Tekton result.
+
+======================================================================
+PART 3 - EVIDENCE REVIEW
+======================================================================
+
+Choose one completed PipelineRun and collect:
+
+oc get pipelinerun/<run-name> -o yaml
+tkn pipelinerun describe <run-name>
+oc get taskrun -l tekton.dev/pipelineRun=<run-name>
+oc get pods -l tekton.dev/pipelineRun=<run-name>
+
+Record only non-sensitive evidence:
+
+PipelineRun: _________________________________________________
+Start/completion time: _______________________________________
+Repository: __________________________________________________
+Requested revision: __________________________________________
+Resolved commit SHA: _________________________________________
+Build mechanism: _____________________________________________
+Image repository: ____________________________________________
+Image digest: ________________________________________________
+Test outcome/report location: _________________________________
+Deployment/environment: ______________________________________
+Final condition, reason, message: _____________________________
+
+Evidence challenge
+
+Can you prove that the deployed image is the same image that passed tests? A tag name alone is insufficient. Compare the recorded digest with the running pod's imageID or the deployment's immutable reference.
+
+======================================================================
+PART 4 - FAILURE SCENARIOS
+======================================================================
+
+For each scenario, state the first three checks, likely fault domain, safe correction, and proof of recovery.
+
+Scenario A: PipelineRun exists but no TaskRun starts
+
+Consider definition resolution, missing parameters/workspaces, admission, Pipeline validation, and ServiceAccount.
+
+Scenario B: clone TaskRun pod remains Pending
+
+Consider unbound PVC, quota, scheduling, security constraints, and image pull. Events are likely more useful than Git logs.
+
+Scenario C: webhook reports success but no run appears
+
+Consider interceptor filtering, binding field paths, TriggerTemplate validation, EventListener identity, namespace, and provider delivery ID.
+
+Scenario D: two runs start for one push
+
+Consider provider redelivery, two matching triggers, BuildConfig plus Tekton webhooks, and missing deduplication.
+
+Scenario E: pipeline is green but staging runs old code
+
+Consider mutable tags, racing runs, ImageStream trigger behaviour, incorrect result wiring, and rollout status.
+
+Scenario F: application cannot connect after a ServiceBinding is created
+
+Consider CRD/API mismatch, binding readiness, projected key names, workload restart, NetworkPolicy, TLS, and credential validity. Do not print the Secret.
+
+Use this response pattern:
+
+Symptom:
+Evidence:
+Hypothesis:
+Single corrective action:
+Recovery proof:
+Preventive improvement:
+
+======================================================================
+PART 5 - PIPELINE DESIGN REVIEW
+======================================================================
+
+Review the pipeline against these questions:
+
+Reproducibility
+
+- Is source resolved to a full commit SHA?
+- Are task and tool images reviewed and pinned?
+- Is the release artifact recorded by digest?
+- Does promotion reuse rather than rebuild the artifact?
+
+Security
+
+- Does the run use a dedicated least-privilege ServiceAccount?
+- Are secrets absent from params, results, logs, and Git?
+- Are external webhooks authenticated, filtered, and TLS protected?
+- Can untrusted pull request code reach deployment credentials?
+
+Reliability
+
+- Are timeouts defined?
+- Are repeated operations idempotent?
+- Are concurrent runs isolated?
+- Do finally tasks tolerate partial execution?
+
+Operability
+
+- Can a responder find the first failed TaskRun quickly?
+- Are run, commit, image, and environment correlated?
+- Are retention and durable evidence policies defined?
+- Are rollback boundaries understood?
+
+For every "No" or "Unknown", write one concrete improvement and an owner.
+
+======================================================================
+PART 6 - CONCEPT REVIEW QUESTIONS
+======================================================================
+
+1. Why is a Pipeline not itself a running CI/CD job?
+2. What is the relationship between PipelineRun and TaskRun?
+3. When is `runAfter` useful, and when is a result dependency clearer?
+4. What is the difference between a BuildConfig and a Build?
+5. Why can an ImageChange trigger be both valuable and risky?
+6. Which object extracts values from a webhook body?
+7. Which object describes the PipelineRun that an event should create?
+8. Why must signature verification happen before payload trust?
+9. What remains external after a PipelineRun is deleted?
+10. Why does service binding simplify configuration but not remove security obligations?
+
+Suggested answer themes
+
+1. It is a reusable desired-state definition; PipelineRun executes it.
+2. PipelineRun coordinates the graph and creates TaskRuns for tasks.
+3. runAfter is an explicit control dependency; result use expresses data and order together.
+4. BuildConfig is the recipe; Build is one execution.
+5. It propagates patched bases but also introduces a new untested change.
+6. TriggerBinding, often after an interceptor validates/transforms the event.
+7. TriggerTemplate.
+8. Payload fields can be forged.
+9. Pushed images, external artifacts, deployments, and external side effects follow their own lifecycle.
+10. Bound data can contain credentials and still requires RBAC, rotation, TLS, and safe consumption.
+
+======================================================================
+PART 7 - CAPSTONE DISCUSSION
+======================================================================
+
+Scenario
+
+An organisation has 80 microservices. Every team copies pipeline YAML, uses `latest`, and has a Git webhook with broad deployment credentials. Builds are fast, but incidents are difficult to trace and duplicated runs are common.
+
+Propose a staged improvement plan:
+
+Immediate risk reduction:
+
+- Separate CI and deployment identities.
+- Protect and filter webhooks.
+- record commit SHA and image digest.
+- prevent untrusted PRs from accessing release credentials.
+
+Standardisation:
+
+- Publish reviewed reusable Tasks/Pipelines through supported resolvers or versioned bundles.
+- define common labels, results, timeouts, and evidence.
+- use parameterised definitions rather than copied forks.
+
+Governance:
+
+- Add policy checks, approvals by environment risk, retention, and provenance.
+- Make promotion use the tested digest.
+- measure reliability without encouraging teams to bypass checks.
+
+Operational maturity:
+
+- Centralise allowed task/tool images.
+- provide dashboards and failure taxonomies.
+- test disaster recovery, credential rotation, and rollback.
+
+======================================================================
+PART 8 - OPENSHIFT PIPELINES 1.22 DOCUMENTATION AUDIT
+======================================================================
+
+Use the local 1.22 Creating CI/CD Pipelines, Installing and Configuring, and Release Notes PDFs to complete this audit. The goal is to practise checking actual product documentation before adopting copied YAML.
+
+1. Confirm the API versions used for Task, Pipeline, PipelineRun, TriggerBinding, TriggerTemplate, Trigger, and EventListener.
+2. Find how the documented PipelineRun selects the `pipeline` ServiceAccount.
+3. Identify the tasks supplied in the `openshift-pipelines` namespace that could clone, build, copy, or deploy.
+4. List the remote resolver types and state which are enabled on your cluster.
+5. Explain why an immutable Git SHA, bundle digest, or HTTP content hash is safer than a moving reference.
+6. Find the Web Console tabs used to debug a PipelineRun.
+7. Identify the 1.22 per-task timeout override field.
+8. State what happened to the public Tekton Hub as a default catalog.
+9. Explain the difference between custom Tekton Triggers and Pipelines as Code.
+10. Classify any feature you want to adopt as GA, Technology Preview, deprecated, or removed.
+
+Documentation evidence table
+
+Claim: ________________________________________________________
+Local PDF and section: ________________________________________
+Cluster command used to verify: _______________________________
+Observed cluster result: ______________________________________
+Decision or adaptation: ______________________________________
+
+Repeat the table for at least five claims. If documentation and cluster behavior differ, record the installed Operator version, API resources, and administrator configuration before concluding that either is wrong.
+
+Final reflection
+
+Write three sentences:
+
+1. The most important difference I learned is ____________________.
+2. One unsafe shortcut I will avoid is __________________________.
+3. One improvement I can apply to a real pipeline is ____________.

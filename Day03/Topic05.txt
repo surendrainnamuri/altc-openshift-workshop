@@ -1,0 +1,219 @@
+GIT-BASED AUTOMATION AND WEBHOOK INTEGRATION
+
+Workshop objective
+You should be able to explain Git event-driven delivery, distinguish BuildConfig and Tekton webhook paths, design Tekton Trigger resources, secure and filter events, and trace a webhook to its PipelineRun.
+
+1. From polling to events
+
+Without webhooks, a person or scheduler asks whether Git has changed. With a webhook, the Git provider sends an HTTP POST when an event occurs. Event-driven automation is faster and more efficient, but the payload is untrusted network input until authenticated and validated.
+
+Git provider -> HTTPS endpoint -> authenticate/filter -> extract fields -> create PipelineRun
+
+2. Two OpenShift webhook models
+
+BuildConfig webhook:
+
+Git -> OpenShift build API URL -> BuildConfig -> Build
+
+Use when the desired event action is directly starting an OpenShift Build.
+
+Tekton Triggers webhook:
+
+Git -> Route/Service -> EventListener -> interceptor -> binding -> template -> PipelineRun
+
+Use when the event should start a multi-stage Tekton workflow.
+
+Do not configure both to perform the same build unless duplicate independent execution is intentional and controlled.
+
+3. Tekton Trigger components
+
+EventListener: Exposes a sink and evaluates one or more triggers.
+
+Interceptor: Authenticates, filters, validates, or transforms the event before resource creation. GitHub/GitLab and CEL interceptors are common, subject to installed versions.
+
+TriggerBinding: Extracts fields from the request body, headers, or interceptor extensions and names them as parameters.
+
+TriggerTemplate: Defines the resource blueprint, often a PipelineRun, and substitutes bound values.
+
+Trigger: Connects interceptors, bindings, and a template. It can be embedded in an EventListener or referenced, depending on the API and preferred style.
+
+4. Example binding
+
+apiVersion: triggers.tekton.dev/v1
+kind: TriggerBinding
+metadata:
+  name: github-push-binding
+spec:
+  params:
+  - name: git-url
+    value: $(body.repository.clone_url)
+  - name: git-revision
+    value: $(body.after)
+  - name: git-ref
+    value: $(body.ref)
+
+Payload paths are provider-specific. Capture a sanitised sample event and test extraction. Prefer the immutable commit SHA (`after`) over the mutable branch name for cloning.
+
+5. Example template
+
+apiVersion: triggers.tekton.dev/v1
+kind: TriggerTemplate
+metadata:
+  name: application-ci-template
+spec:
+  params:
+  - name: git-url
+  - name: git-revision
+  - name: git-ref
+  resourcetemplates:
+  - apiVersion: tekton.dev/v1
+    kind: PipelineRun
+    metadata:
+      generateName: application-ci-
+      labels:
+        app.kubernetes.io/managed-by: tekton-triggers
+    spec:
+      pipelineRef:
+        name: application-ci
+      params:
+      - name: git-url
+        value: $(tt.params.git-url)
+      - name: git-revision
+        value: $(tt.params.git-revision)
+      workspaces:
+      - name: shared-data
+        volumeClaimTemplate:
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            resources:
+              requests:
+                storage: 1Gi
+
+The EventListener ServiceAccount needs permission to create the resource templates. It does not automatically need the deployment rights used by the PipelineRun ServiceAccount. Separate these identities.
+
+6. Filtering and verification
+
+A production trigger should normally verify the provider signature/token, accept only intended event types, filter repository and branch/ref, and validate required fields.
+
+Example policy intent:
+
+- Accept push events only.
+- Repository full name equals the approved repository.
+- Ref equals refs/heads/main.
+- Signature validates using a Secret.
+- Clone the exact commit from the event.
+
+Use installed interceptor syntax from cluster documentation. Interceptor APIs and parameter shapes have changed across releases; copying old YAML is a frequent workshop failure.
+
+Security order matters: authenticate before trusting payload claims. A body field saying `repository=trusted/repo` is not proof of origin.
+
+7. Exposing the EventListener
+
+The EventListener usually has a Service. On OpenShift, an authorised user may expose it through a TLS Route:
+
+oc get eventlistener
+oc get service | findstr /I el-
+oc expose service/<event-listener-service-name>
+oc get route
+
+The exact generated Service name and exposure method depend on the installed Triggers/OpenShift Pipelines version. Use TLS, a valid certificate, network controls where possible, and the minimum public exposure necessary.
+
+Do not put long-lived secrets in the webhook URL. Store verification material in a Secret referenced by the interceptor.
+
+8. Git provider setup
+
+In GitHub, GitLab, Bitbucket, or another SCM:
+
+1. Open repository webhook/integration settings.
+2. Enter the HTTPS EventListener Route URL.
+3. Select JSON content type if offered.
+4. Configure the shared signing secret/token expected by the interceptor.
+5. Select only required events.
+6. Save and inspect the test delivery.
+
+Provider menus and header formats evolve; consult current provider documentation. Never reveal the signing secret in training screenshots.
+
+9. Test safely
+
+Before a real event, validate objects and endpoint:
+
+oc get triggerbinding,triggertemplate,eventlistener
+oc describe eventlistener/<name>
+oc get pods,service,route
+
+Use a sanitised payload and a correctly computed signature only in an authorised lab. A random curl POST should be rejected when signature verification is enabled. Test three cases:
+
+- Valid signed main-branch push creates exactly one PipelineRun.
+- Invalid signature creates none.
+- Valid signature for an excluded branch creates none.
+
+10. Traceability and deduplication
+
+Carry these fields into labels, annotations, parameters, or durable provenance as appropriate:
+
+- Provider delivery/event ID.
+- Repository identity.
+- Full commit SHA.
+- Ref.
+- Event timestamp.
+- Trigger or EventListener identity.
+
+Webhook providers retry on timeouts and transient failures. Design for duplicate delivery. The exact deduplication mechanism may be an interceptor, event ID store, pipeline idempotency control, or artifact naming rule. At minimum, immutable commit-based images prevent a duplicate from creating ambiguous artifacts.
+
+11. Pull requests versus push events
+
+CI for a pull request should test untrusted code without production credentials. Forked PRs are especially risky: the contributor may change pipeline-consumed scripts. Use restricted ServiceAccounts, no deployment Secrets, read-only or isolated registries, and platform policies.
+
+Deployment should use a trusted post-merge event or a controlled promotion process, not merely the source branch name supplied in an untrusted payload.
+
+12. Troubleshooting flow
+
+No provider delivery: Check webhook activation, selected event, and provider logs.
+
+HTTP/DNS/TLS failure: Check Route, certificate chain, service endpoints, EventListener pod, and network policy.
+
+401/403 or rejected: Check signing secret/key, header format, interceptor configuration, and ServiceAccount.
+
+Accepted but no PipelineRun: Inspect EventListener logs/status, interceptor filtering, binding paths, template substitution, admission errors, and events.
+
+PipelineRun has wrong revision: Compare payload SHA, binding path, template parameter, and clone Task parameter.
+
+Duplicate PipelineRuns: Check provider redelivery, multiple EventListener triggers, BuildConfig webhook overlap, and event-ID controls.
+
+Commands:
+
+oc describe eventlistener/<name>
+oc logs deployment/<event-listener-deployment>
+oc get events --sort-by=.lastTimestamp
+oc get pipelinerun --sort-by=.metadata.creationTimestamp
+
+13. Real-world example
+
+A healthcare API pipeline accepts signed pushes to `main`. The trigger binds the repository URL and exact SHA. CI runs with no production credentials. The resulting image digest and test evidence are stored. A separate, authorised promotion workflow deploys the same digest to production after approval. A webhook can start validation, but cannot bypass environment policy.
+
+14. OpenShift Pipelines 1.22 trigger pattern
+
+The local 1.22 guide uses four triggers.tekton.dev/v1 resources: TriggerBinding extracts event fields, TriggerTemplate creates a PipelineRun with a volumeClaimTemplate, Trigger connects binding and template, and EventListener references that Trigger. The generated PipelineRun selects the `pipeline` ServiceAccount through `spec.taskRunTemplate.serviceAccountName`.
+
+For a secured EventListener, the guide documents enabling the namespace annotation behavior and exposing the listener through a re-encrypt TLS Route. Re-encrypt protects both client-to-router and router-to-service legs when the destination certificate is validated. An insecure HTTP Route is shown as an alternative in the documentation, but it is unsuitable for credentials or production webhooks.
+
+The guide also covers GitHub interceptor filtering and pull-request validation. Treat pull-request code as untrusted even after the event signature is valid: the signature proves provider origin, not code safety.
+
+Pipelines as Code is another Git-native integration supplied by OpenShift Pipelines. It discovers pipeline definitions associated with repository events and reports status to the provider. Do not combine Pipelines as Code, a custom EventListener, and a BuildConfig webhook for the same release action without a deliberate ownership and deduplication design.
+
+Knowledge check
+
+- How does a BuildConfig webhook differ from Tekton Triggers?
+- Why should the clone use the event commit SHA?
+- What does a TriggerBinding do?
+- Why is payload filtering not a substitute for signature verification?
+- How would you prove that one delivery created one run?
+
+References
+
+- Tekton Triggers overview: https://tekton.dev/docs/triggers/
+- TriggerBindings: https://tekton.dev/docs/triggers/triggerbindings/
+- TriggerTemplates: https://tekton.dev/docs/triggers/triggertemplates/
+- OpenShift BuildConfig webhooks: https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/builds_using_buildconfig/triggering-builds-build-hooks
+- Local source: Red_Hat_OpenShift_Pipelines-1.22-Creating_CICD_pipelines-en-US.pdf, sections 1.7-1.12
+- Local source: Red_Hat_OpenShift_Pipelines-1.22-Release_notes-en-US.pdf

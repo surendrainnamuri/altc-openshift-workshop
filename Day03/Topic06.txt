@@ -1,0 +1,202 @@
+SIMPLIFIED CONFIGURATION WITH SERVICE BINDING CONCEPTS
+
+Workshop objective
+You should be able to explain service binding, identify providers and consumers, understand how binding data is projected into workloads, assess security implications, and decide how binding fits into CI/CD.
+
+1. The configuration problem
+
+An application often needs a database URL, host, port, username, password, certificate, or API endpoint. Hand-written environment variables create drift: each environment uses different names, deployment YAML embeds provider details, credential rotation requires manual edits, and application teams must understand every Operator's resource layout.
+
+Service binding makes the intent declarative:
+
+workload (consumer) + backing service (provider) + binding intent
+                         |
+                         v
+             projected connection data
+
+The goal is a consistent contract, not automatic creation of every service and not elimination of Secrets.
+
+2. Core concepts
+
+Backing service/provider: A database, message broker, cache, object store, API, or another service that exposes connection information.
+
+Application/workload/consumer: A Deployment or another supported workload that needs the information.
+
+Binding data: Keys such as type, provider, host, port, database, username, password, uri, or certificate. Actual keys depend on the provider contract.
+
+ServiceBinding resource: Declares the intent to connect a workload to a service and controls projection.
+
+Projection: Makes binding data available to the application, commonly as files mounted into its container, and in some implementations/configurations as environment variables.
+
+3. Availability and APIs
+
+Service binding has evolved. Red Hat documentation describes Service Binding Operator APIs including `binding.operators.coreos.com` and the servicebinding.io specification API in relevant releases. Operator availability, installed CRDs, support status, and syntax differ by OpenShift and Operator version.
+
+Always discover first:
+
+oc api-resources | findstr /I servicebinding
+oc get crd | findstr /I servicebinding
+oc explain servicebinding
+oc get csv -A | findstr /I binding
+
+If no ServiceBinding CRD exists, the concept remains useful but the YAML will not apply. Ask the platform owner whether an Operator or framework binding mechanism is supported. Do not install cluster-wide Operators as part of an attendee lab without authorisation.
+
+4. File-based projection
+
+The Service Binding Specification commonly represents one binding as a directory. Each file name is a key and its content is the value:
+
+/bindings/orders-db/
+  type
+  provider
+  host
+  port
+  database
+  username
+  password
+  uri
+
+The application discovers a binding root through framework conventions or configuration. File projection avoids copying credentials into command-line arguments and can make key boundaries clear. Files are still sensitive: anyone able to exec into the container or read the mounted Secret may access them.
+
+5. Conceptual binding manifest
+
+The following is illustrative. Adapt the apiVersion and fields to the installed CRD:
+
+apiVersion: servicebinding.io/v1beta1
+kind: ServiceBinding
+metadata:
+  name: orders-api-to-database
+spec:
+  service:
+    apiVersion: postgresql.example.com/v1
+    kind: Database
+    name: orders-db
+  workload:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: orders-api
+
+Some implementations use a different API group or resource-reference structure. `oc explain servicebinding.spec --recursive` is the correct cluster-specific authority.
+
+6. How providers expose data
+
+An Operator-managed custom resource can expose binding data through conventions, annotations, owned Secrets, status fields, or descriptors understood by the binding implementation. The binding controller gathers permitted fields and projects them to the workload.
+
+The provider contract must be reviewed:
+
+- Which keys are available?
+- Which are credentials?
+- Are values sourced from a Secret or status?
+- Who can read the source and projected data?
+- What happens during credential rotation?
+- Does the workload reload files, or require restart?
+
+7. Application consumption
+
+Applications should treat binding keys as configuration. A robust application:
+
+- Detects required bindings at startup.
+- Validates mandatory keys and formats.
+- Does not log secret values.
+- Supports certificate validation.
+- Fails clearly if configuration is incomplete.
+- Documents whether it reloads changed files.
+
+Frameworks may provide service-binding libraries. Without one, the application can read well-defined files from the binding root. Avoid hard-coding a provider Operator's internal Secret name.
+
+8. Service binding in a pipeline
+
+A CI/CD pipeline may:
+
+1. Deploy or confirm the backing service in a test namespace.
+2. Deploy the application workload.
+3. Create the ServiceBinding intent.
+4. Wait for binding readiness and workload rollout.
+5. Run an application-level connectivity test.
+6. Record non-secret evidence.
+
+The pipeline should not print the binding Secret or mounted files. A useful validation proves behaviour (for example, a health endpoint confirms a database query) without exposing credentials.
+
+Keep infrastructure ownership clear. A pipeline may reference a database managed by another team; it should not delete or reconfigure that shared service during cleanup.
+
+9. Security considerations
+
+- Use least-privilege RBAC for the binding controller and pipeline ServiceAccounts.
+- Treat projected binding data as Secret material when it contains credentials.
+- Do not expose values through Pipeline params, results, logs, annotations, or Git.
+- Prefer TLS and validate server certificates.
+- Scope bindings to intended namespaces and workloads.
+- Rotate credentials and test consumer behaviour.
+- Review cross-namespace binding carefully; it expands trust boundaries.
+- Use short-lived or dynamically issued credentials where the provider supports them.
+
+A binding automates delivery of configuration; it does not decide whether the consumer should be trusted.
+
+10. Binding versus alternatives
+
+Direct Secret/ConfigMap reference: Simple and native, good when key names and lifecycle are controlled, but creates coupling to provider-specific data.
+
+Service binding: Declarative consumer-provider intent and consistent projection, useful with compatible Operators/frameworks.
+
+External Secrets/CSI: Synchronises or mounts values from an external secret manager. It solves a different source-of-secrets problem and can complement binding.
+
+Environment variables: Widely supported but visible in process/environment inspection and often require restart. File projection is commonly preferable for structured and rotatable data.
+
+GitOps: Reconciles declarative resources, including ServiceBinding objects, but should not store plaintext credentials.
+
+11. Rotation and lifecycle
+
+When a source Secret changes, volume-projected files may update eventually, but application reload behaviour and binding-controller behaviour vary. Environment variables normally require a new pod. Define and test the rotation sequence:
+
+new credential issued -> binding data updated -> workload reload/restart -> connection verified -> old credential revoked
+
+Revoking the old credential too early can cause downtime. Retaining it too long increases exposure.
+
+Deletion also needs thought. Removing a binding may update the workload and trigger a rollout, but it need not delete the service or source Secret. Inspect owner references and implementation documentation before cleanup.
+
+12. Troubleshooting
+
+Binding resource rejected: API/version or field mismatch. Use `oc explain`.
+
+Binding not Ready: Describe it and inspect events/controller logs within your permissions.
+
+No projected data: Verify provider reference, workload reference, exposed keys, Secret existence, RBAC, container selection, and rollout status.
+
+Application cannot connect: Check key names, DNS, port, TLS, NetworkPolicy, credential validity, and whether the app reads files or environment variables.
+
+Rotation not observed: Check source update, projected volume timing, controller reconciliation, and application reload behaviour.
+
+Commands:
+
+oc get servicebinding
+oc describe servicebinding/<name>
+oc get deployment/<app> -o yaml
+oc rollout status deployment/<app>
+oc get events --sort-by=.lastTimestamp
+
+Do not use `oc get secret -o yaml` in a shared session.
+
+13. Real-world example
+
+An insurance claims API needs PostgreSQL in development, test, and production. Each environment's database Operator uses different generated Secret names. The application consumes a stable binding contract rather than those names. The pipeline deploys by digest, applies the binding, waits for readiness, and calls a non-sensitive readiness endpoint that verifies database access. Credential values never appear in the pipeline definition or result.
+
+14. Binding and pipeline credentials are separate concerns
+
+The local OpenShift Pipelines 1.22 guide describes pipeline authentication with ServiceAccount-linked Secrets, including Git and registry credentials. Those credentials allow pipeline Steps to fetch or push. Service Binding instead projects a backing service's application connection data into a consumer workload. Do not use one mechanism as an undocumented substitute for the other.
+
+A mature release can use both: the PipelineRun identity reads Git and pushes an image; the deployed workload receives database connection material through a ServiceBinding. Separate identities, Secret sources, rotation cycles, and audit trails prevent a compromised build step from automatically inheriting runtime database access.
+
+Because the local 1.22 PDFs focus on OpenShift Pipelines rather than the Service Binding Operator, use the cluster's installed CRD and its matching Red Hat documentation as the syntax authority. This limitation is itself an important documentation skill: do not infer a resource API from an adjacent product guide.
+
+Knowledge check
+
+- What problem does service binding solve?
+- Why is a binding not a replacement for Secret security?
+- What must be checked before applying example ServiceBinding YAML?
+- How can a pipeline verify connectivity without revealing credentials?
+- What application behaviour affects rotation success?
+
+References
+
+- Red Hat OpenShift documentation, Connecting applications to services (version-specific example): https://docs.redhat.com/en/documentation/openshift_container_platform/4.14/html/building_applications/connecting-applications-to-services
+- Service Binding Specification: https://servicebinding.io/
+- Local context source: Red_Hat_OpenShift_Pipelines-1.22-Creating_CICD_pipelines-en-US.pdf (pipeline identity and credential handling)

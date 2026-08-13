@@ -1,0 +1,708 @@
+LAB 03 - BUILD AN EVENT-READY OPENSHIFT CI/CD PIPELINE
+
+Lab type: Progressive, attendee-focused hands-on practice
+Recommended duration: 150-210 minutes in full
+Difficulty: Foundation to intermediate
+
+======================================================================
+1. LAB PURPOSE
+======================================================================
+
+You will create and operate a small Tekton pipeline on OpenShift Container Platform. The safe core path uses locally created Tasks and a shared workspace, so it does not depend on a public Git repository or privileged image builder. You will then inspect PipelineRun/TaskRun relationships, create an optional BuildConfig integration, design a secure webhook path, and evaluate Service Binding availability.
+
+The lab separates core exercises from optional environment-dependent exercises. Complete only actions authorised on your cluster.
+
+Core delivery model:
+
+PipelineRun
+  -> prepare-source Task writes a simulated source revision
+  -> test-source Task reads and validates it
+  -> package-result Task records an artifact identity
+  -> finally summary Task executes
+
+Extension model:
+
+Git webhook -> EventListener -> TriggerBinding -> TriggerTemplate -> PipelineRun
+Pipeline Task -> BuildConfig -> Build -> image
+Application + backing service -> ServiceBinding -> projected configuration
+
+======================================================================
+2. LEARNING OUTCOMES
+======================================================================
+
+After completing this lab, you should be able to:
+
+1. Discover OpenShift Pipelines and Trigger APIs.
+2. Create parameterised Tekton Tasks.
+3. connect Tasks through a workspace and results.
+4. Create and execute a PipelineRun.
+5. Trace a PipelineRun to TaskRuns and pods.
+6. Diagnose a controlled Task failure.
+7. Explain safe retry and cancellation.
+8. Decide whether BuildConfig or a Tekton-native build owns image creation.
+9. Design and optionally create Git trigger resources.
+10. Discover and assess Service Binding support.
+
+======================================================================
+3. PREREQUISITES AND SAFETY
+======================================================================
+
+Required:
+
+- OpenShift project creation or access to an assigned project.
+- `oc` CLI.
+- Red Hat OpenShift Pipelines installed.
+- Permission to create Task, Pipeline, TaskRun, PipelineRun, ConfigMap, Secret, and PVC resources in the assigned namespace.
+- `tkn` CLI is recommended but not mandatory.
+
+Optional extensions require additional permissions, cluster APIs, network access, a storage class, and/or a Git repository you control.
+
+Safety rules
+
+- Work only in your assigned project.
+- Never paste login tokens, webhook secrets, Git credentials, or registry passwords into notes or screenshots.
+- Do not grant cluster-admin or broad wildcard RBAC.
+- Do not expose an EventListener publicly without authentication, TLS, and authorisation.
+- Use only approved images.
+- Replace placeholders before running commands.
+- Do not run cleanup in a namespace you did not create or receive explicitly.
+
+Resource names
+
+Project: day03-<your-id>
+Tasks: prepare-source, test-source, package-result, run-summary
+Pipeline: day03-ci
+
+Create a local working directory on your workstation for the YAML files. The commands below assume each manifest is saved under the filename shown.
+
+======================================================================
+4. LAB 0 - CONNECT AND DISCOVER
+======================================================================
+
+Step 0.1 - Authenticate
+
+Use the cluster's official Copy login command flow:
+
+oc login --token=<token> --server=<api-server-url>
+
+Protect the token. Verify context:
+
+oc whoami
+oc whoami --show-server
+
+Step 0.2 - Create or select your project
+
+oc new-project day03-<your-id>
+
+If assigned an existing project:
+
+oc project <assigned-project>
+
+oc project
+
+Step 0.3 - Discover APIs
+
+oc api-resources | findstr /I "pipeline task tekton trigger servicebinding"
+oc get crd | findstr /I "tekton servicebinding"
+tkn version
+oc get task -n openshift-pipelines
+
+Linux/macOS attendees can replace `findstr /I` with `grep -Ei`.
+
+Expected core APIs include Task, TaskRun, Pipeline, and PipelineRun. Record:
+
+Pipeline API version supported: _______________________________
+Trigger APIs present: Yes / No
+ServiceBinding API present: Yes / No
+Default StorageClass available: Yes / No / Unknown
+
+Check constraints:
+
+oc get resourcequota,limitrange
+oc auth can-i create tasks.tekton.dev
+oc auth can-i create pipelineruns.tekton.dev
+
+Checkpoint: You are in the correct namespace and the core Tekton APIs exist.
+
+Documentation alignment note
+
+The local Red Hat OpenShift Pipelines 1.22 guide uses tekton.dev/v1 for pipeline resources and triggers.tekton.dev/v1 for Trigger resources. It also uses cluster-resolved tasks from the `openshift-pipelines` namespace. If your cluster differs, adapt to the installed APIs and record the reason.
+
+======================================================================
+5. LAB 1 - CREATE FOUR TASKS
+======================================================================
+
+Step 1.1 - Create prepare-source-task.yaml
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: prepare-source
+spec:
+  params:
+  - name: git-revision
+    type: string
+  workspaces:
+  - name: source
+  results:
+  - name: resolved-revision
+    description: Revision used by this simulated source preparation.
+  steps:
+  - name: prepare
+    image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+    workingDir: $(workspaces.source.path)
+    script: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      printf '%s\n' 'sample application source' > application.txt
+      printf '%s\n' '$(params.git-revision)' > revision.txt
+      printf '%s' '$(params.git-revision)' > '$(results.resolved-revision.path)'
+      echo 'Prepared source files'
+
+This Task simulates cloning so the core lab remains deterministic. In a real pipeline, use a reviewed Git clone Task and emit the resolved full commit SHA.
+
+Step 1.2 - Create test-source-task.yaml
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: test-source
+spec:
+  params:
+  - name: expected-text
+    type: string
+    default: sample
+  workspaces:
+  - name: source
+  results:
+  - name: test-outcome
+  steps:
+  - name: test
+    image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+    workingDir: $(workspaces.source.path)
+    script: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      grep -F -- '$(params.expected-text)' application.txt
+      printf '%s' 'passed' > '$(results.test-outcome.path)'
+      echo 'Source validation passed'
+
+Step 1.3 - Create package-result-task.yaml
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: package-result
+spec:
+  params:
+  - name: revision
+    type: string
+  - name: test-outcome
+    type: string
+  results:
+  - name: artifact-reference
+  steps:
+  - name: record
+    image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+    script: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      test '$(params.test-outcome)' = 'passed'
+      ref='example.invalid/day03/app:$(params.revision)'
+      printf '%s' "${ref}" > '$(results.artifact-reference.path)'
+      echo "Recorded non-pushed lab artifact ${ref}"
+
+The `example.invalid` domain deliberately prevents accidental pushes. A production build must emit a real immutable digest, not only a tag.
+
+Step 1.4 - Create run-summary-task.yaml
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: run-summary
+spec:
+  params:
+  - name: message
+    type: string
+  steps:
+  - name: print
+    image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+    script: |
+      #!/usr/bin/env bash
+      printf '%s\n' '$(params.message)'
+
+Step 1.5 - Apply and inspect
+
+oc apply -f prepare-source-task.yaml
+oc apply -f test-source-task.yaml
+oc apply -f package-result-task.yaml
+oc apply -f run-summary-task.yaml
+oc get task
+
+oc describe task/prepare-source
+
+Checkpoint questions
+
+- Which data is passed as a parameter?
+- Which files cross Tasks through the workspace?
+- Which small values are emitted as results?
+- Why is the image reference not a real release artifact?
+
+======================================================================
+6. LAB 2 - CREATE THE PIPELINE
+======================================================================
+
+Create day03-ci-pipeline.yaml:
+
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: day03-ci
+spec:
+  params:
+  - name: git-revision
+    type: string
+    default: main
+  - name: expected-text
+    type: string
+    default: sample
+  workspaces:
+  - name: shared-data
+  results:
+  - name: resolved-revision
+    value: $(tasks.prepare.results.resolved-revision)
+  - name: artifact-reference
+    value: $(tasks.package.results.artifact-reference)
+  tasks:
+  - name: prepare
+    taskRef:
+      name: prepare-source
+    params:
+    - name: git-revision
+      value: $(params.git-revision)
+    workspaces:
+    - name: source
+      workspace: shared-data
+  - name: test
+    taskRef:
+      name: test-source
+    runAfter:
+    - prepare
+    params:
+    - name: expected-text
+      value: $(params.expected-text)
+    workspaces:
+    - name: source
+      workspace: shared-data
+  - name: package
+    taskRef:
+      name: package-result
+    params:
+    - name: revision
+      value: $(tasks.prepare.results.resolved-revision)
+    - name: test-outcome
+      value: $(tasks.test.results.test-outcome)
+  finally:
+  - name: summary
+    taskRef:
+      name: run-summary
+    params:
+    - name: message
+      value: Day03 pipeline reached its final reporting task.
+
+Apply:
+
+oc apply -f day03-ci-pipeline.yaml
+oc get pipeline/day03-ci -o yaml
+
+Reason about the graph before running:
+
+- `test` explicitly runs after `prepare` and shares its files.
+- `package` consumes results from both tasks, so data dependencies order it.
+- `summary` is a finally task.
+
+Checkpoint: Predict which TaskRuns will exist if `test` fails.
+
+Resolver extension
+
+Inspect the supplied tasks and resolver support without changing cluster configuration:
+
+oc get task/git-clone -n openshift-pipelines -o yaml
+oc get task/buildah -n openshift-pipelines -o yaml
+oc get task/openshift-client -n openshift-pipelines -o yaml
+
+If a named Task is not present, record that result; cluster administrators can disable automatic resolver tasks. Do not copy a task into your project without reviewing its images, parameters, workspaces, results, and security requirements.
+
+Sketch how the pipeline's `taskRef` would change to use the cluster resolver with parameters `kind=task`, `name=<task-name>`, and `namespace=openshift-pipelines`. Keep the deterministic Tasks for the core execution unless the workshop environment explicitly supports the full documented build flow.
+
+======================================================================
+7. LAB 3 - EXECUTE A SUCCESSFUL PIPELINERUN
+======================================================================
+
+Step 3.1 - Create day03-ci-run.yaml
+
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: day03-ci-
+  labels:
+    app.kubernetes.io/name: day03-sample
+spec:
+  pipelineRef:
+    name: day03-ci
+  params:
+  - name: git-revision
+    value: commit-a1b2c3d
+  - name: expected-text
+    value: sample
+  workspaces:
+  - name: shared-data
+    volumeClaimTemplate:
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 100Mi
+
+Create it:
+
+oc create -f day03-ci-run.yaml
+
+Capture the generated name:
+
+oc get pipelinerun --sort-by=.metadata.creationTimestamp
+
+If the PVC remains Pending because no dynamic storage is available, ask for an assigned PVC or replace the workspace binding with `emptyDir: {}` if supported and appropriate for this single-node-sequence lab. Do not alter cluster storage.
+
+Step 3.2 - Follow logs
+
+tkn pipelinerun logs <run-name> -f
+
+Without tkn:
+
+oc get taskrun -l tekton.dev/pipelineRun=<run-name>
+oc logs <taskrun-pod-name> --all-containers=true
+
+Step 3.3 - Trace child resources
+
+oc get taskrun -l tekton.dev/pipelineRun=<run-name>
+oc get pods -l tekton.dev/pipelineRun=<run-name>
+oc get pvc
+oc describe pipelinerun/<run-name>
+
+Record:
+
+PipelineRun final condition: __________________________________
+Prepare TaskRun: ______________________________________________
+Test TaskRun: __________________________________________________
+Package TaskRun: _______________________________________________
+Summary TaskRun: _______________________________________________
+Resolved revision result: _____________________________________
+Artifact reference result: ____________________________________
+
+Checkpoint: Explain why the PipelineRun created TaskRuns without you creating them manually.
+
+======================================================================
+8. LAB 4 - CONTROLLED FAILURE AND DIAGNOSIS
+======================================================================
+
+Create a second PipelineRun by copying the run manifest and changing:
+
+- name: expected-text
+  value: text-that-does-not-exist
+
+Keep `generateName`; create the new run:
+
+oc create -f day03-ci-failing-run.yaml
+
+Investigate without changing resources immediately:
+
+oc get pipelinerun
+tkn pipelinerun describe <failed-run>
+tkn pipelinerun logs <failed-run> --all
+oc get taskrun -l tekton.dev/pipelineRun=<failed-run>
+oc get pods -l tekton.dev/pipelineRun=<failed-run>
+oc get events --sort-by=.lastTimestamp
+
+Answer:
+
+1. Which TaskRun failed first?
+2. Which step returned non-zero?
+3. Did `package` run? Why?
+4. Did `summary` run? Why?
+5. Which evidence distinguishes a test failure from a scheduling failure?
+
+Recovery
+
+Create a third PipelineRun with the correct expected text. Do not edit status or reuse the failed run. Confirm success and compare the three execution histories.
+
+======================================================================
+9. LAB 5 - TASKRUN PRACTICE
+======================================================================
+
+Run `run-summary` independently:
+
+tkn task start run-summary --param message='Standalone TaskRun practice' --showlog
+
+Or save and apply:
+
+apiVersion: tekton.dev/v1
+kind: TaskRun
+metadata:
+  generateName: run-summary-
+spec:
+  taskRef:
+    name: run-summary
+  params:
+  - name: message
+    value: Standalone TaskRun practice
+
+oc create -f run-summary-taskrun.yaml
+
+Explain:
+
+- A TaskRun can execute outside a Pipeline.
+- A TaskRun created by a PipelineRun is associated through labels/ownership.
+- Standalone execution is useful for focused testing but does not reproduce the whole pipeline context.
+
+======================================================================
+10. LAB 6 - OPTIONAL BUILDCONFIG INTEGRATION
+======================================================================
+
+Perform only if Builds are enabled, outbound Git is allowed, an approved builder exists, and the repository is authorised.
+
+Discover:
+
+oc api-resources | findstr /I buildconfig
+oc new-app --search nodejs
+
+Create a BuildConfig from the workshop repository pattern:
+
+oc new-build <approved-builder>~<approved-git-url> --name=day03-app
+oc get bc/day03-app -o yaml
+oc start-build day03-app --follow --wait
+oc get builds
+oc describe build/<build-name>
+
+Inspect triggers:
+
+oc describe bc/day03-app
+oc get bc/day03-app -o jsonpath='{.spec.triggers}'
+
+Do not publish the webhook URLs displayed by `describe`.
+
+Integration design exercise
+
+Write a Task design that uses an approved `oc` CLI image to run `oc start-build day03-app --follow --wait`. Identify the minimum ServiceAccount permissions. Your design must capture the completed Build name and resulting image digest as evidence.
+
+Decision question: Will Git call the BuildConfig webhook directly, or will Tekton receive Git events and start the build? Select one orchestration owner and justify it.
+
+======================================================================
+11. LAB 7 - OPTIONAL GIT WEBHOOK DESIGN
+======================================================================
+
+This section is design-first. Create live external webhooks only in a repository you control and only if your EventListener can be exposed securely.
+
+Step 7.1 - Map event data
+
+For a GitHub-style push payload, propose:
+
+git-url       <- $(body.repository.clone_url)
+git-revision  <- $(body.after)
+git-ref       <- $(body.ref)
+delivery-id   <- provider request header or $(context.eventID)
+
+Step 7.2 - Define controls
+
+Your design must:
+
+- Verify the provider signature with a Secret.
+- Accept only the required event type.
+- Accept only the intended repository and refs/heads/main.
+- Pass the exact commit SHA.
+- Use a TriggerTemplate with generateName.
+- Use a separate EventListener ServiceAccount with only create PipelineRun permission.
+- Use TLS and avoid secrets in URLs or logs.
+
+Step 7.3 - Discover installed syntax
+
+oc explain eventlistener.spec --recursive
+oc explain triggerbinding.spec --recursive
+oc explain triggertemplate.spec --recursive
+
+Compare the cluster API with Topic05 before applying YAML. Trigger/interceptor syntax is version-sensitive.
+
+For an OpenShift Pipelines 1.22 cluster, expect `triggers.tekton.dev/v1`. A documented TriggerTemplate creates a tekton.dev/v1 PipelineRun, selects its identity under `spec.taskRunTemplate.serviceAccountName`, and can create isolated storage with a `volumeClaimTemplate`.
+
+Secure exposure design
+
+Prefer an OpenShift re-encrypt TLS Route for an externally reachable EventListener. Record how the router validates the destination service certificate. Do not fall back to an insecure HTTP Route merely to make the exercise pass.
+
+Step 7.4 - Acceptance tests
+
+Document expected outcomes:
+
+Valid signed main push: exactly one run
+Invalid signature: no run
+Valid feature branch push: no run
+Duplicate delivery ID: no duplicate side effect
+
+Evidence should include the provider delivery record, EventListener logs without secrets, and PipelineRun labels/annotations.
+
+======================================================================
+12. LAB 8 - SERVICE BINDING DISCOVERY
+======================================================================
+
+Step 8.1 - Determine support
+
+oc api-resources | findstr /I servicebinding
+oc get crd | findstr /I servicebinding
+oc get csv -A | findstr /I binding
+
+If absent, stop the live exercise and complete the design questions. Do not install an Operator.
+
+If present:
+
+oc explain servicebinding.spec --recursive
+
+Record exact apiVersion: ______________________________________
+Record provider/workload reference fields: ____________________
+
+Step 8.2 - Design an authorised binding
+
+Select an application and backing service supplied for the workshop. Define the binding using the installed API. Before applying, verify:
+
+- Both resource names and namespaces.
+- Which binding keys the provider exposes.
+- Which container consumes them.
+- Whether a workload rollout occurs.
+- How connectivity will be tested without printing credentials.
+
+Step 8.3 - Verify safely
+
+oc get servicebinding
+oc describe servicebinding/<name>
+oc rollout status deployment/<application>
+oc get events --sort-by=.lastTimestamp
+
+Use an application health/query operation to prove connectivity. Do not display the projected Secret values.
+
+Rotation discussion
+
+Describe how a changed password moves from provider to binding projection to application reload/restart, then how the old password is revoked.
+
+======================================================================
+13. LAB 9 - OPERATIONS, CANCELLATION, AND RETENTION
+======================================================================
+
+Create a list of runs sorted by time:
+
+oc get pipelinerun --sort-by=.metadata.creationTimestamp
+
+Inspect cancellation options without cancelling a completed run:
+
+tkn pipelinerun cancel --help
+
+Answer:
+
+- Which external effects would cancellation not undo?
+- Which Pipeline/Task timeouts should be defined?
+- Which run records and logs must be retained?
+- Who cleans per-run PVCs?
+- Where would long-term provenance live?
+
+Do not delete evidence until the review section is complete.
+
+1.22 operations extension
+
+Ask an administrator or use read-only access to determine effective TektonConfig behavior:
+
+oc get tektonconfig config -o yaml
+
+If access is denied, record that outcome; do not request broad rights. Look for the default ServiceAccount, default timeout, metrics levels, provenance-in-status, and enabled resolvers. Do not edit TektonConfig in this lab.
+
+If supported, design a PipelineRun override for one task using `spec.taskRunSpecs[].timeout`. Explain why the whole PipelineRun still needs a timeout.
+
+======================================================================
+14. CAPSTONE EVIDENCE REPORT
+======================================================================
+
+Prepare this report for one successful and one failed run:
+
+Application/workflow: _________________________________________
+Namespace: ____________________________________________________
+Pipeline definition: __________________________________________
+PipelineRun: __________________________________________________
+Requested revision: ___________________________________________
+Resolved revision: ____________________________________________
+TaskRuns executed: ____________________________________________
+Workspace binding: ____________________________________________
+Final condition/reason: _______________________________________
+Failed Task/Step, if any: _____________________________________
+Relevant event/log evidence: __________________________________
+Artifact reference/digest: ____________________________________
+Secrets exposed: No (if Yes, stop and report through policy)
+Recovery action: ______________________________________________
+Preventive improvement: _______________________________________
+
+Success criteria
+
+- All four Task definitions exist.
+- The Pipeline validates.
+- At least one PipelineRun succeeds.
+- A controlled failure is diagnosed using evidence.
+- PipelineRun, TaskRun, pod, workspace, parameter, and result relationships are explained.
+- BuildConfig, webhook, and service-binding extensions are completed or assessed accurately against cluster capabilities.
+- No secret is disclosed.
+
+======================================================================
+15. CLEANUP
+======================================================================
+
+Preferred cleanup, only if you created a dedicated Day03 project and are authorised to delete it:
+
+oc project
+
+Confirm the output exactly matches your unique `day03-<your-id>` project. Then:
+
+oc delete project day03-<your-id>
+
+If using a shared project, do not delete the project. Delete only resources you created, using explicit names after listing them:
+
+oc get pipeline,task,pipelinerun,taskrun,pvc
+
+oc delete pipeline/day03-ci
+oc delete task/prepare-source task/test-source task/package-result task/run-summary
+
+Delete individual PipelineRuns/PVCs only after confirming their exact names and retention requirements. Optional BuildConfig, Trigger, Route, Secret, and ServiceBinding resources must be removed only if you created them and they are not shared.
+
+Remember: deleting Kubernetes run records does not automatically remove images or external artifacts.
+
+======================================================================
+16. FINAL REVIEW
+======================================================================
+
+1. Why did the core lab use a simulated source Task?
+2. Which resource turned a Pipeline definition into an execution?
+3. How did `package` receive both ordering and data dependencies?
+4. Why did the finally Task execute after a test failure?
+5. What evidence is needed to promote the exact tested artifact?
+6. How would a webhook event become a PipelineRun?
+7. Where can BuildConfig participate without duplicating orchestration?
+8. Why was ServiceBinding discovered before YAML was written?
+9. Which permissions belong to the EventListener versus the pipeline?
+10. What would you change before using this pattern for production?
+
+Reference documentation
+
+- Red Hat OpenShift Pipelines: https://docs.redhat.com/en/documentation/red_hat_openshift_pipelines/
+- Local primary source: Red_Hat_OpenShift_Pipelines-1.22-Creating_CICD_pipelines-en-US.pdf
+- Local primary source: Red_Hat_OpenShift_Pipelines-1.22-Installing_and_configuring-en-US.pdf
+- Local primary source: Red_Hat_OpenShift_Pipelines-1.22-Release_notes-en-US.pdf
+- Red Hat OpenShift Pipelines 1.22: https://docs.redhat.com/en/documentation/red_hat_openshift_pipelines/1.22
+- Tekton Pipelines: https://tekton.dev/docs/pipelines/
+- Tekton Tasks: https://tekton.dev/docs/pipelines/tasks/
+- Tekton Triggers: https://tekton.dev/docs/triggers/
+- OpenShift BuildConfig builds: https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/builds_using_buildconfig/index
+- Service Binding Specification: https://servicebinding.io/

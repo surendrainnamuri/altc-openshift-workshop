@@ -1,0 +1,226 @@
+CREATING AND EXECUTING PIPELINES
+
+Workshop objective
+You should be able to design a small pipeline, create Tasks and a Pipeline, bind parameters and a workspace in a PipelineRun, observe execution, and recognise production-quality design choices.
+
+1. Design from the outcome backwards
+
+Before writing YAML, define the release evidence. For a containerised service, a meaningful flow is:
+
+clone exact revision -> test -> build immutable image -> deploy candidate -> smoke test
+
+Decide which facts must cross stages: resolved commit SHA, image URL, image digest, test report location, target namespace, and deployment result. Use parameters for intended inputs, results for small produced facts, workspaces for files, and an external store for large artifacts.
+
+2. A small reusable Task
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: verify-source
+spec:
+  description: Performs a simple policy check against cloned source.
+  params:
+  - name: required-file
+    type: string
+    default: README.md
+  workspaces:
+  - name: source
+  results:
+  - name: verification
+  steps:
+  - name: check
+    image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+    workingDir: $(workspaces.source.path)
+    script: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      test -f "$(params.required-file)"
+      printf '%s' 'passed' > "$(results.verification.path)"
+
+For production, use an approved image pinned to a digest. Quoting substituted values reduces shell word-splitting risk but does not make arbitrary untrusted input safe. Design parameters with constrained purpose.
+
+3. Referencing Tasks in a Pipeline
+
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: application-ci
+spec:
+  params:
+  - name: git-url
+    type: string
+  - name: git-revision
+    type: string
+    default: main
+  workspaces:
+  - name: shared-data
+  tasks:
+  - name: clone
+    taskRef:
+      name: git-clone
+    params:
+    - name: url
+      value: $(params.git-url)
+    - name: revision
+      value: $(params.git-revision)
+    workspaces:
+    - name: output
+      workspace: shared-data
+  - name: verify
+    taskRef:
+      name: verify-source
+    runAfter:
+    - clone
+    workspaces:
+    - name: source
+      workspace: shared-data
+  finally:
+  - name: summary
+    taskSpec:
+      steps:
+      - name: message
+        image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+        script: |
+          echo "Pipeline finished"
+
+The `git-clone` Task must exist or be resolved from an approved remote source as configured on the cluster. Do not assume a ClusterTask exists: ClusterTasks are deprecated upstream; modern reusable resolution commonly uses resolvers.
+
+4. Binding a PipelineRun
+
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: application-ci-
+  labels:
+    app.kubernetes.io/name: sample-app
+spec:
+  pipelineRef:
+    name: application-ci
+  params:
+  - name: git-url
+    value: https://github.com/<organisation>/<repository>.git
+  - name: git-revision
+    value: main
+  workspaces:
+  - name: shared-data
+    volumeClaimTemplate:
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+
+`generateName` makes each run immutable and uniquely named. A volumeClaimTemplate gives each run isolated persistent storage. If the cluster storage class cannot dynamically provision a claim, bind an existing PVC or use another supported workspace type supplied by the workshop.
+
+5. Apply and run
+
+oc apply -f verify-source-task.yaml
+oc apply -f application-ci-pipeline.yaml
+oc create -f application-ci-run.yaml
+
+Or start interactively:
+
+tkn pipeline start application-ci --showlog
+
+For reproducible automation, prefer version-controlled PipelineRun manifests, TriggerTemplates, or generated release configuration over unrecorded interactive answers.
+
+6. Observe execution
+
+oc get pipelinerun,taskrun,pod
+tkn pipelinerun list
+tkn pipelinerun describe <run-name>
+tkn pipelinerun logs <run-name> -f
+
+Trace ownership:
+
+oc get taskrun -l tekton.dev/pipelineRun=<run-name>
+oc get pods -l tekton.dev/pipelineRun=<run-name>
+
+Look at Conditions, start/completion times, skipped tasks, results, and child references. Logs explain step behaviour; `describe` and events explain scheduling, admission, workspace, and identity failures.
+
+7. Building a useful graph
+
+Use `runAfter` only for explicit control dependency. Passing a Task result naturally introduces dependency:
+
+params:
+- name: commit
+  value: $(tasks.clone.results.commit)
+
+Use `when` for controlled conditional behaviour, such as deploying only for `main`. Do not rely only on a client-supplied branch parameter for production authorisation; validate trusted event context and apply environment controls.
+
+Use `finally` for cleanup or notification. A finally task must tolerate partial state because earlier tasks may never have run. Cleanup should be idempotent.
+
+8. Building and deploying images safely
+
+OpenShift clusters commonly use BuildConfig, Buildah, Shipwright, or other approved build mechanisms. The exact Task and security requirements vary. Avoid Docker socket mounting and privileged builds unless specifically approved.
+
+Publish an immutable digest as a result. Deploy by digest where the deployment mechanism supports it:
+
+image-registry.openshift-image-registry.svc:5000/<project>/<app>@sha256:<digest>
+
+Mutable tags can be convenient pointers, but the release record should retain the digest.
+
+9. Authentication
+
+Git clone credentials, registry credentials, and API permissions are distinct. Attach each only where needed. A ServiceAccount may reference Secrets, and workspace-bound Secrets can expose credentials as files. Follow the installed task's documented credential model.
+
+Never include credentials in:
+
+- Pipeline parameters or results.
+- Git URLs.
+- Task scripts or ConfigMaps.
+- logs and screenshots.
+
+10. Reliability and quality controls
+
+- Specify timeouts so hung external calls end predictably.
+- Set CPU and memory requests/limits appropriate for build steps.
+- Make retryable tasks idempotent.
+- Pin third-party Tasks and step images to reviewed versions or digests.
+- Validate Pipeline YAML through admission and a non-production run.
+- Use results for provenance and external durable systems for long-term evidence.
+- Keep deployment and database migration rollback semantics explicit.
+
+11. Real-time delivery example
+
+A logistics team builds a tracking API. Clone emits the resolved SHA. Unit-test and static-analysis tasks run in parallel on the same read-only source state. The image task waits for both, builds once, and emits a digest. A staging deploy task consumes the digest. Integration tests produce a report in object storage. Production promotion uses the already-tested digest after approval.
+
+12. Common failures
+
+Task not found: Check namespace, name, resolver configuration, and installed catalog content.
+
+PipelineRun Pending: Inspect PVC status, pod events, quota, ServiceAccount, and scheduling.
+
+InvalidTaskResultReference: The producer did not write the declared result or was skipped. Make conditions and result consumption consistent.
+
+Permission denied: Identify the verb/resource/namespace in the error, then grant the narrowest required Role permission.
+
+Workspace data missing: Verify Pipeline workspace mapping, Task workspace name, subPath, volume binding, and task order.
+
+Build succeeds but deployment is old: Compare produced digest, Deployment image, rollout status, and any ImageStream trigger behaviour.
+
+13. Reusable resources in OpenShift Pipelines 1.22
+
+The 1.22 guide uses the cluster resolver to consume tasks such as `git-clone`, `buildah`, and `openshift-client` from the `openshift-pipelines` namespace. A representative task reference has `resolver: cluster` and parameters for `kind`, `name`, and `namespace`. Verify the exact task interface with `oc get task -n openshift-pipelines` or the resolver documentation before wiring parameters.
+
+Available resolver types documented for 1.22 include Hub, bundle, Git, HTTP, and cluster. Their enablement is controlled through TektonConfig by an administrator. A developer cannot assume all resolvers are enabled. The HTTP resolver can validate SHA-256 or SHA-512 content hashes in 1.22; Git SHAs and bundle digests provide analogous immutable references.
+
+OpenShift Pipelines 1.22 introduces StepActions and supplies selected StepAction definitions. StepActions support reuse below Task granularity, but check feature status, installed API fields, governance, and compatibility before using them in a foundational pipeline.
+
+The Web Console Pipeline builder can assemble and edit task graphs, start runs, and expose TaskRuns, Logs, and Events. Keep the source-controlled YAML authoritative even when using the visual builder, and review the diff before promotion.
+
+Knowledge check
+
+- Why use generateName for PipelineRuns?
+- What causes two tasks to execute in parallel?
+- When does a Task result create an ordering dependency?
+- Why should deployment use the tested image digest?
+- What must a finally task assume about earlier tasks?
+
+References
+
+- Tekton Tasks: https://tekton.dev/docs/pipelines/tasks/
+- Tekton Pipeline API: https://tekton.dev/docs/pipelines/pipeline-api/
+- Red Hat OpenShift Pipelines documentation: https://docs.redhat.com/en/documentation/red_hat_openshift_pipelines/
+- Local source: Red_Hat_OpenShift_Pipelines-1.22-Creating_CICD_pipelines-en-US.pdf, chapters 1-3

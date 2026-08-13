@@ -1,0 +1,188 @@
+MANAGING PIPELINERUN AND TASKRUN WORKFLOWS
+
+Workshop objective
+You should be able to operate pipeline executions, correlate PipelineRuns with TaskRuns and pods, interpret conditions and logs, retry safely, cancel runs, preserve evidence, and troubleshoot failures systematically.
+
+1. Runs are operational records
+
+A PipelineRun captures one attempt to execute a Pipeline with concrete inputs. A TaskRun captures one Task execution. These resources contain status, timing, results, references, and conditions. They should be named, labelled, retained, and protected as operational evidence.
+
+PipelineRun
+  +-- TaskRun: clone
+  |     +-- Pod and step containers
+  +-- TaskRun: test
+  |     +-- Pod and step containers
+  +-- TaskRun: build
+        +-- Pod and step containers
+
+PipelineRuns created from embedded pipelineSpec may preserve a snapshot-like definition inside the run. Runs using pipelineRef are still separate objects whose resolution behaviour depends on the installed Tekton version and configuration. For durable provenance, version definitions in Git and record revision/bundle metadata.
+
+2. Status and conditions
+
+Start with:
+
+oc get pipelinerun
+tkn pipelinerun describe <name>
+oc get pipelinerun/<name> -o yaml
+
+The Succeeded condition is commonly True, False, or Unknown. Unknown generally means the run is still progressing or its final state has not been established. Read Reason and Message; do not infer state only from coloured icons.
+
+TaskRuns show similar conditions plus step termination information. Pod phase alone is insufficient: Tekton may still be processing results or final state.
+
+3. Correlating resources
+
+Use labels and owner relationships:
+
+oc get taskrun -l tekton.dev/pipelineRun=<pipeline-run>
+oc get pods -l tekton.dev/pipelineRun=<pipeline-run>
+oc get taskrun --show-labels
+
+Inspect one child:
+
+tkn taskrun describe <task-run>
+tkn taskrun logs <task-run>
+oc describe pod/<pod-name>
+
+PipelineRun logs provide the workflow story. TaskRun logs narrow the failure. Pod events explain image pulls, scheduling, admission, mounts, and resource problems.
+
+4. Useful result inspection
+
+tkn pipelinerun describe <run-name>
+oc get pipelinerun/<run-name> -o jsonpath='{.status.results}'
+oc get taskrun/<task-run> -o jsonpath='{.status.results}'
+
+Field names can differ across installed API versions. Use `oc explain` and inspect YAML. Results are evidence only if the producing step writes a correct value and downstream controls validate it.
+
+5. Starting repeatable runs
+
+Interactive start:
+
+tkn pipeline start application-ci --param git-revision=main --workspace name=shared-data,claimName=ci-workspace --showlog
+
+Manifest-driven run:
+
+oc create -f run.yaml
+
+For auditability, label runs:
+
+metadata:
+  labels:
+    app.kubernetes.io/name: orders-api
+    delivery.example.com/environment: test
+    delivery.example.com/commit: a1b2c3d
+
+Avoid placing sensitive or excessively high-cardinality data in labels. Annotations can hold non-indexed metadata within Kubernetes size limits; external provenance storage is better for larger records.
+
+6. Cancellation and timeouts
+
+Use the installed CLI's help because cancellation modes evolve:
+
+tkn pipelinerun cancel --help
+tkn pipelinerun cancel <run-name>
+
+Or apply the supported PipelineRun cancellation status for the installed version. Cancellation stops orchestration but cannot always undo external side effects already completed, such as an image push, database migration, or external deployment.
+
+Define timeouts for the whole pipeline and, where supported, tasks and finally tasks. Timeouts create predictable failure boundaries; they do not make non-idempotent operations safe.
+
+7. Rerun and retry semantics
+
+A retry is a new attempt. Ask before rerunning:
+
+- Will the same Git revision be used, or has a mutable branch moved?
+- Does the same image tag now resolve to a different image?
+- Will an external API create duplicates?
+- Does the workspace contain partial output?
+- Did a deployment or migration already occur?
+
+Prefer immutable Git SHAs and image digests. Give side-effecting tasks idempotency keys or check current state before mutation. A fresh PipelineRun with isolated workspace is often clearer than reusing contaminated state.
+
+8. Failure taxonomy
+
+Validation/admission failure: Invalid API, missing parameter, unresolved Task, or policy rejection. The execution pod may never exist.
+
+Scheduling failure: Quota, unbound PVC, insufficient capacity, node selectors, taints, or security constraints. Inspect events.
+
+Step failure: Tool exits non-zero. Read current step logs and termination status.
+
+Result failure: A consumed result was not produced, is malformed, or exceeds limits.
+
+Credential/RBAC failure: Git, registry, or Kubernetes API denies access. Separate authentication from authorisation.
+
+External dependency failure: Git, artifact store, registry, scanner, or target environment is unavailable or rate-limited.
+
+Policy failure: The pipeline is working correctly by stopping a non-compliant artifact.
+
+9. Evidence-first troubleshooting workflow
+
+1. Record run name, namespace, start time, requested revision, and symptom.
+2. Inspect PipelineRun condition, reason, and task status.
+3. Identify the first failed or blocked TaskRun.
+4. Read its logs; for Pending, inspect pod/PVC events first.
+5. Verify inputs without exposing Secrets.
+6. Form one hypothesis and test it.
+7. Correct the definition or external cause.
+8. Create a new controlled run.
+9. Prove recovery and record artifact digest.
+
+Commands:
+
+oc describe pipelinerun/<name>
+tkn pipelinerun logs <name> --all
+oc get taskrun -l tekton.dev/pipelineRun=<name>
+oc get pods,pvc
+oc get events --sort-by=.lastTimestamp
+oc auth can-i <verb> <resource> --as=system:serviceaccount:<namespace>:<service-account>
+
+Do not impersonate identities unless authorised; `oc auth can-i` may be restricted.
+
+10. Retention, pruning, and long-term results
+
+PipelineRuns, TaskRuns, pods, PVCs, and logs consume resources. Red Hat OpenShift Pipelines supports configurable pruning; settings vary by Operator version. Retain enough history for operations and compliance while protecting etcd.
+
+Before pruning:
+
+- Export required provenance and reports.
+- Confirm logs are forwarded to durable storage if required.
+- Clean per-run PVCs according to policy.
+- Understand that deleting a PipelineRun may cascade to owned TaskRuns/pods, while pushed images and external artifacts follow separate retention policies.
+
+Tekton Results is a separate component for long-term run/result records when installed and configured; do not assume it is present.
+
+11. Observability and service levels
+
+Useful measures include run duration, queue time, success rate, failure reason, task duration, retry rate, and deployment lead time. A high green rate can hide skipped tests; monitor task coverage and policy decisions as well as final status.
+
+Avoid placing customer data or secrets in logs. Ensure log retention and access reflect sensitivity.
+
+12. Concurrency
+
+Concurrent PipelineRuns can compete for quotas, registry locks, shared PVCs, mutable tags, and target environments. Isolate workspaces and use unique artifact identifiers. Protect environment deployment through policy, locking, or GitOps reconciliation rather than hoping runs finish in order.
+
+13. Real-world incident
+
+Two release runs for the same service start minutes apart. Both push `candidate:latest`; the slower older run finishes last and overwrites the tag. Staging deploys the older code. The prevention is to build immutable commit-addressed images, capture digests, deploy by digest, and control environment concurrency.
+
+14. OpenShift Pipelines 1.22 administration facts
+
+TektonConfig can establish a default ServiceAccount, default timeouts, pod templates, metrics level, credential initialization behavior, provenance-in-status, and resolver enablement. These are cluster-admin controls. A workshop participant should inspect effective behavior and avoid assuming that defaults match another cluster.
+
+When enabled, provenance in TaskRun and PipelineRun status records metadata about remotely fetched Task or Pipeline definitions. It complements rather than replaces commit, digest, signature, test, and promotion evidence.
+
+The 1.22 release supports `spec.taskRunSpecs[].timeout` to override individual task timeouts at PipelineRun level. Use it for known task-specific bounds while retaining a whole-run limit. The release also requeues PipelineRuns when PVC creation hits quota until quota becomes available or the run times out; operators should therefore distinguish waiting from permanent failure.
+
+The Web Console exposes Task Runs, Logs, and Events tabs for a PipelineRun and can show pipeline execution statistics when the console plugin is enabled. Use these views with CLI evidence rather than treating either interface as a separate source of truth.
+
+Knowledge check
+
+- Why is a pod phase not the whole PipelineRun status?
+- What should be checked before rerunning a failed deployment pipeline?
+- Where do scheduling failures usually surface?
+- Why must workspace and tag use be concurrency-safe?
+- What remains after a PipelineRun record is deleted?
+
+References
+
+- Red Hat OpenShift Pipelines 1.22 installation and configuration: https://docs.redhat.com/en/documentation/red_hat_openshift_pipelines/1.22/html-single/installing_and_configuring/index
+- Local sources: Red_Hat_OpenShift_Pipelines-1.22-Installing_and_configuring-en-US.pdf and Red_Hat_OpenShift_Pipelines-1.22-Release_notes-en-US.pdf
+- Tekton Results: https://tekton.dev/docs/results/
+- Tekton labels: https://tekton.dev/docs/pipelines/labels/

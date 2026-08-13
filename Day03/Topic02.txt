@@ -1,0 +1,199 @@
+AUTOMATING BUILDS WITH BUILDCONFIG AND TRIGGERS
+
+Workshop objective
+You should be able to explain the OpenShift BuildConfig model, select a build strategy, configure safe triggers, start and inspect builds, and decide when a BuildConfig belongs inside a wider Tekton pipeline.
+
+1. The OpenShift build model
+
+A BuildConfig is a durable build recipe. A Build is one numbered execution of that recipe. A build normally reads source, runs an S2I or Docker/Containerfile strategy, pushes the output image, and records status.
+
+Git -> BuildConfig -> Build pod -> image registry -> ImageStreamTag
+
+BuildConfig and Tekton are complementary. A Tekton Task can run tests and call oc start-build, wait for the Build to complete, then consume or deploy its output. Alternatively, a Tekton-native build Task can build and push directly. Choose one ownership model deliberately so that retries, logs, credentials, and artifact identity remain understandable.
+
+2. Common strategies
+
+Source strategy (S2I): Combines source with a controlled builder image. It suits supported runtimes and standardised developer workflows.
+
+Docker strategy: Builds a Dockerfile/Containerfile with OpenShift's build mechanism. It offers more image-layer control but requires careful base-image and instruction hygiene.
+
+Custom strategy: Runs an organisation-specific builder image. It is powerful and privileged implications must be reviewed; many environments restrict it.
+
+Pipeline strategy in BuildConfig is a legacy Jenkins integration and is not Tekton. Do not confuse it with Red Hat OpenShift Pipelines.
+
+3. Essential BuildConfig fields
+
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: orders-api
+spec:
+  runPolicy: Serial
+  source:
+    type: Git
+    git:
+      uri: https://github.com/example/orders-api.git
+      ref: main
+    contextDir: app
+  strategy:
+    sourceStrategy:
+      from:
+        kind: ImageStreamTag
+        name: nodejs:20
+        namespace: openshift
+  output:
+    to:
+      kind: ImageStreamTag
+      name: orders-api:latest
+  triggers:
+  - type: ConfigChange
+
+Verify builder tags and API fields on your cluster. `runPolicy` controls concurrency: Serial queues builds, SerialLatestOnly can discard obsolete queued builds, and Parallel allows simultaneous builds. Parallel builds require isolated and concurrency-safe external dependencies.
+
+4. Creating and starting builds
+
+oc new-build <builder>~<git-url> --name=orders-api
+oc get bc/orders-api -o yaml
+oc start-build orders-api --follow --wait
+oc get builds
+oc describe build/orders-api-1
+oc logs build/orders-api-1
+
+To instantiate a Build from local files for an appropriately configured Binary source:
+
+oc start-build orders-api --from-dir=. --follow
+
+Binary builds are convenient for controlled experiments but weaken Git-based traceability unless source identity is captured separately.
+
+5. Trigger types
+
+ConfigChange: Starts a build when a BuildConfig is first created or relevant configuration changes. It does not mean every YAML update must create a new application release; inspect observed behaviour.
+
+ImageChange: Starts a build when a referenced ImageStreamTag changes. This can rebuild applications on a patched builder/base image. Combine it with testing and controlled promotion because a base-image change is still a software change.
+
+Webhook: An SCM or another system sends an HTTP POST. OpenShift supports GitHub, GitLab, Bitbucket, and generic BuildConfig webhooks. Current OpenShift documentation describes push-event handling for SCM-specific webhooks.
+
+Manual: No trigger object is required. A person or pipeline runs oc start-build. This is often appropriate when Tekton is the orchestration authority.
+
+6. Secure webhook secrets
+
+Current OpenShift documentation recommends a Secret reference containing the key WebHookSecretKey instead of embedding a deprecated plaintext secret field.
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: orders-webhook
+type: Opaque
+stringData:
+  WebHookSecretKey: replace-with-a-long-random-value
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: orders-api
+spec:
+  triggers:
+  - type: GitHub
+    github:
+      secretReference:
+        name: orders-webhook
+  # source, strategy and output omitted
+
+Do not commit the real secret. Retrieve a generated webhook URL only in an authorised terminal:
+
+oc describe bc/orders-api
+
+Treat the URL as sensitive because its path contains trigger material. Do not place it in screenshots or general documentation. Git provider webhook signing and the uniqueness secret in the OpenShift URL are related controls but are not necessarily the same field.
+
+7. Branch and revision behaviour
+
+For supported SCM push webhooks, OpenShift compares the event branch ref with spec.source.git.ref. When they match, the build checks out the exact commit named by the event. A mismatch should not trigger the build.
+
+This prevents a `feature/demo` push from silently becoming a `main` build. Confirm these facts in Build status:
+
+oc get build/<build-name> -o yaml
+oc describe build/<build-name>
+
+Record the source revision, cause, output image reference, and final phase.
+
+8. Integrating BuildConfig with Tekton
+
+A pipeline Task can start and wait for a build:
+
+steps:
+- name: start-build
+  image: <trusted-oc-cli-image>
+  script: |
+    #!/usr/bin/env sh
+    set -eu
+    oc start-build orders-api --follow --wait
+
+The pipeline ServiceAccount needs only the required build permissions. A better production task also finds the new Build, verifies Complete status, resolves the resulting image digest, and emits the digest as a Task result.
+
+Avoid having a BuildConfig Git webhook and a Tekton Git trigger start two independent release paths for the same push. Possible patterns are:
+
+- Git -> Tekton -> BuildConfig -> deploy (Tekton is orchestrator).
+- Git -> BuildConfig for image build; image event or explicit handoff -> pipeline for validation/deployment.
+- Git -> Tekton-native clone/build/test/deploy (BuildConfig not used).
+
+9. Run policy, cancellation, and retention
+
+Inspect active builds before changing configuration:
+
+oc get builds --sort-by=.metadata.creationTimestamp
+oc cancel-build <build-name>
+
+Build history consumes API and log storage. Configure successful and failed history limits in line with audit policy. Deleting a Build record does not necessarily delete its already-pushed image; registry retention is separate.
+
+10. Real-world example
+
+A bank maintains an approved Java builder ImageStream. ImageChange triggers create candidate application images when the platform team publishes a patched builder. A Tekton pipeline then runs regression and security tests. Only a passing candidate digest is promoted. This achieves patch propagation without blindly deploying every builder change.
+
+11. Troubleshooting
+
+Build stays New/Pending:
+
+oc describe build/<name>
+oc get events --sort-by=.lastTimestamp
+
+Look for quota, scheduling, service account, image-pull, or volume problems.
+
+Clone fails: Verify URI, ref, proxy, CA trust, and source Secret.
+
+Push fails: Verify output reference, registry reachability, ServiceAccount image-push rights, and quota.
+
+Webhook does nothing: Check delivery status at the Git provider, URL, event type, branch ref, secret reference, webhook RBAC, and BuildConfig triggers. Do not weaken unauthenticated cluster-wide access casually.
+
+Unexpected duplicate builds: Check Git webhook redelivery, both Tekton and BuildConfig triggers, ImageChange plus ConfigChange interaction, and retry logic.
+
+12. Decision checklist
+
+- Is the output an immutable, traceable image?
+- Which system owns orchestration?
+- Is build concurrency safe?
+- Are triggers authenticated and branch-filtered?
+- Can the run identity push only to intended repositories?
+- Can an operator map commit -> Build -> image digest?
+- Is retention consistent with audit requirements?
+
+13. Relationship to the documented 1.22 pipeline pattern
+
+The Red Hat OpenShift Pipelines 1.22 guide demonstrates a Tekton-native flow using a cluster-resolved `git-clone` Task, a `buildah` Task supplied in the `openshift-pipelines` namespace, manifest application, and an OpenShift client task to update a Deployment. This is an alternative to BuildConfig, not a hidden BuildConfig wrapper.
+
+Use BuildConfig when its S2I/Docker build lifecycle, ImageStreams, and native build triggers are organisational standards. Use the documented Tekton-native model when a pipeline should own clone, test, image build, push, and deployment as one graph. In either model, record the exact source revision and output digest.
+
+Restricted-network clusters require mirrored task/step images and reachable Git/artifact sources. The 1.22 guide includes image mirroring for disconnected pipeline execution. A build design is incomplete until every image and remote definition can resolve inside the actual network boundary.
+
+Knowledge check
+
+- What is the difference between BuildConfig and Build?
+- Why is a BuildConfig Pipeline strategy not Tekton?
+- When is ImageChange useful, and what risk does it introduce?
+- Why should duplicate trigger paths be avoided?
+- Which evidence proves the exact commit and output artifact?
+
+References
+
+- OpenShift Container Platform 4.20, Builds using BuildConfig: https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/builds_using_buildconfig/index
+- Triggering and modifying builds: https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/builds_using_buildconfig/triggering-builds-build-hooks
+- Local comparison source: Red_Hat_OpenShift_Pipelines-1.22-Creating_CICD_pipelines-en-US.pdf

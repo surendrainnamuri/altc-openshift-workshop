@@ -1,0 +1,169 @@
+UNDERSTANDING OPENSHIFT PIPELINES AND TEKTON BASICS
+
+Workshop objective
+By the end of this topic, you should be able to describe why teams use pipelines, identify the Tekton resources installed by Red Hat OpenShift Pipelines, trace a pipeline from definition to pods, and distinguish reusable definitions from individual executions.
+
+1. Why CI/CD exists
+
+Continuous Integration (CI) means integrating small source changes frequently and validating them automatically. A typical CI flow clones a precise Git revision, installs dependencies, runs tests, scans source and dependencies, builds an immutable image, and records evidence.
+
+Continuous Delivery (CD) means keeping a validated change deployable through repeatable automation. Continuous deployment goes one step further and automatically promotes every qualifying change. A pipeline can support either policy; automation does not remove approvals, segregation of duties, or risk controls.
+
+A useful pipeline answers five questions:
+
+- What exact source revision entered the process?
+- Which controlled tools and inputs were used?
+- Which checks passed or failed?
+- Which immutable artifact was produced?
+- Where was that artifact deployed or promoted?
+
+2. OpenShift Pipelines and Tekton
+
+Red Hat OpenShift Pipelines is an OpenShift-integrated distribution of Tekton. Tekton extends Kubernetes with custom resources for declaring and running CI/CD workflows. Pipeline objects are stored and reconciled through the Kubernetes API, and execution steps run as containers in pods.
+
+Important consequence: a pipeline is not a long-running build server. The controller watches declarative resources and creates short-lived execution pods. OpenShift supplies identity, RBAC, Secrets, networking, storage, scheduling, logging, the Web Console, and Operator-based lifecycle management around those workloads.
+
+3. Core resource model
+
+Task: A reusable, namespaced definition containing ordered Steps. A Task can declare parameters, workspaces, results, volumes, and step images.
+
+Step: One container operation inside a Task. Steps in the same Task execute in order and can share that Task's workspace.
+
+TaskRun: One execution of a Task with concrete parameters, workspaces, credentials, timeouts, and runtime settings.
+
+Pipeline: A reusable graph of PipelineTasks. It declares how Tasks are connected and can include parameters, workspaces, results, when expressions, and finally Tasks.
+
+PipelineRun: One execution of a Pipeline. It binds concrete input values and storage to the reusable definition. The controller normally creates one TaskRun for each executed PipelineTask.
+
+Workspace: A declared location through which Tasks receive shared files, credentials, or configuration. A PipelineRun binds it to a PVC, volumeClaimTemplate, Secret, ConfigMap, emptyDir, or another supported volume source.
+
+Result: A small value produced by a Task, such as a commit SHA, image URL, image digest, or test summary. Results are not intended for large artifacts.
+
+ServiceAccount: The workload identity used by a TaskRun or PipelineRun. Its RBAC and attached credentials determine what the run can read, create, update, or push.
+
+Trigger resources: EventListener, TriggerBinding, TriggerTemplate, and interceptors translate validated external events into resources such as PipelineRuns.
+
+4. Definition versus execution
+
+Task ---------> TaskRun ---------> step containers in a pod
+  reusable       one attempt
+
+Pipeline ------> PipelineRun ----> TaskRuns ----> pods
+  reusable       one release       one per task
+
+Editing a Pipeline does not retroactively change an already-created PipelineRun. Treat execution records as evidence. Use labels and annotations to associate a run with its repository, commit, application, environment, and requesting event.
+
+5. How Tekton determines order
+
+- Data dependency: consuming $(tasks.clone.results.commit) creates an ordering dependency.
+- runAfter: states an explicit dependency when no result is passed.
+- when: conditionally includes a task.
+- finally: runs cleanup, notification, or evidence collection after normal tasks finish, including failure cases subject to its own conditions.
+- Unconnected tasks may run in parallel.
+
+Prefer dependencies that express meaning. Do not serialize all tasks merely to make the visual graph look simple.
+
+6. Parameters, workspaces, results, and artifacts
+
+Parameters are small configuration inputs: Git URL, revision, image name, deployment name, or environment. Do not pass passwords as parameters because they can appear in YAML, status, logs, or CLI history.
+
+Workspaces hold files across tasks. Source code commonly moves from clone to test to build through a shared workspace. For concurrent runs, use isolated storage; sharing one writable PVC between runs can produce corruption or cross-run contamination.
+
+Results move small facts. A clone task can publish a resolved commit; a build task can publish an image digest; the Pipeline can expose these as final results.
+
+Large reports and binary packages belong in artifact repositories, object storage, registries, or dedicated results systems. Record their immutable location in a result.
+
+7. Security model
+
+Each Step runs an image. Therefore every tool image is part of the software supply chain. Pin trusted images by digest where practical, scan them, minimise privileges, and understand their update policy.
+
+Apply least privilege to the pipeline ServiceAccount. A build generally needs to read source credentials and push an image; a deployment task may need to patch only a named workload in one namespace. Avoid granting cluster-admin to make a lab work.
+
+Use Kubernetes Secrets or approved credential mechanisms. Never echo tokens. Separate CI and deployment identities when duties differ. OpenShift's security context constraints still apply; pipeline images should be compatible with arbitrary non-root UIDs.
+
+8. Discovering the installed environment
+
+The OpenShift Pipelines Operator and CLI versions vary by cluster. Inspect rather than assume:
+
+oc api-resources | findstr /I "tekton pipeline task trigger"
+oc get crd | findstr /I tekton
+tkn version
+oc get csv -A | findstr /I pipeline
+
+On Linux or macOS, replace findstr with grep. Check the cluster's supported API versions before copying an example:
+
+oc explain pipeline.spec
+oc explain pipelinerun.spec
+
+Red Hat OpenShift Pipelines 1.22 examples use tekton.dev/v1 for Task, TaskRun, Pipeline, and PipelineRun and triggers.tekton.dev/v1 for TriggerBinding, TriggerTemplate, Trigger, and EventListener. Older clusters and examples can use v1beta1, so the installed cluster remains authoritative.
+
+9. CLI and Web Console
+
+Useful commands:
+
+tkn task list
+tkn pipeline list
+tkn pipelinerun list
+tkn pipelinerun logs <run-name> -f
+oc get task,pipeline,taskrun,pipelinerun
+oc describe pipelinerun/<run-name>
+
+In the Developer perspective, use Pipelines to see definitions, runs, task graphs, logs, parameters, workspaces, and status. CLI commands are better for repeatable investigation; the console is excellent for understanding relationships.
+
+10. Real-world example
+
+An online retailer receives a commit for its checkout service. The pipeline clones the exact commit, executes unit tests, performs policy scans, builds an image, records its digest, deploys that digest to a test namespace, runs an API smoke test, and requests approval for production. Promotion uses the same digest; production is not rebuilt from mutable source.
+
+11. Common misconceptions
+
+"A Pipeline is a running process." It is a definition; PipelineRun is the execution.
+
+"Every Task needs its own manually created TaskRun." A PipelineRun normally creates them.
+
+"A green pipeline proves the application is safe." It proves only that the encoded checks passed with the observed inputs.
+
+"latest is good enough." Mutable tags weaken reproducibility; record and promote digests.
+
+"CI/CD means production must be automatic." Delivery policy may include approvals and controlled promotion.
+
+12. Troubleshooting starting point
+
+oc get pipelinerun
+tkn pipelinerun describe <run-name>
+tkn pipelinerun logs <run-name> --all
+oc get taskrun -l tekton.dev/pipelineRun=<run-name>
+oc get pods -l tekton.dev/pipelineRun=<run-name>
+oc get events --sort-by=.lastTimestamp
+
+First identify the failed TaskRun, then the failed Step, then inspect its logs and pod events. A scheduling or volume error often appears in events rather than application logs.
+
+Knowledge check
+
+- What is the difference between a Task and a TaskRun?
+- What does a PipelineRun supply that a Pipeline does not?
+- When should a result be used instead of a workspace?
+- Why can two unconnected PipelineTasks run concurrently?
+- Which identity controls the run's API permissions?
+
+Summary
+
+OpenShift Pipelines turns CI/CD logic into Kubernetes-native, declarative resources. Tasks and Pipelines are reusable definitions; TaskRuns and PipelineRuns are auditable executions. Parameters configure, workspaces share files, results pass small facts, and ServiceAccounts provide controlled identity.
+
+13. OpenShift Pipelines 1.22 operational context
+
+The local Red Hat 1.22 guide documents a `pipeline` ServiceAccount created and configured by the Operator in new projects. A PipelineRun can select it explicitly through `spec.taskRunTemplate.serviceAccountName`. Treat this convenient default as a starting point, not proof that its permissions are appropriate for every production workflow.
+
+OpenShift Pipelines 1.22 also supports remote resource resolution from cluster, Git, bundle, Hub, and HTTP sources when the relevant resolver is enabled. This makes central reuse practical, but every remote reference is a supply-chain input. Prefer immutable Git SHAs, bundle digests, or an HTTP resolver hash. The 1.22 resolver cache defaults to an `auto` model that favors immutable references.
+
+The 1.22 release adds step `displayName`, per-task PipelineRun timeout overrides through `spec.taskRunSpecs[].timeout`, and more resilient handling when PipelineRun PVC creation encounters quota limits. These features improve readability and operation but do not replace namespace quota planning or pipeline-wide timeouts.
+
+The public Tekton Hub is no longer a supported default built-in catalog in 1.22. Use the tasks delivered in `openshift-pipelines`, a governed self-hosted catalog, reviewed bundles, or another approved resolver source.
+
+References
+
+- Local source: Red_Hat_OpenShift_Pipelines-1.22-Creating_CICD_pipelines-en-US.pdf
+- Local source: Red_Hat_OpenShift_Pipelines-1.22-Installing_and_configuring-en-US.pdf
+- Local source: Red_Hat_OpenShift_Pipelines-1.22-Release_notes-en-US.pdf
+- Red Hat OpenShift Pipelines 1.22 documentation: https://docs.redhat.com/en/documentation/red_hat_openshift_pipelines/1.22
+- Tekton Pipelines concepts: https://tekton.dev/docs/pipelines/
+- Tekton Pipeline API: https://tekton.dev/docs/pipelines/pipeline-api/
