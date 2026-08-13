@@ -1,0 +1,90 @@
+ACCESSING LOGS AND EVENTS; CLI DEBUG TOOLS
+
+Workshop objective
+You should be able to select the correct source of runtime evidence, collect logs without exposing secrets, read Kubernetes events, and use CLI inspection tools to distinguish application failure from platform, scheduling, or access problems.
+
+1. Evidence sources have different jobs
+
+Application logs explain what code reported. Container termination state explains why the runtime exited. Events explain scheduling, image pulls, admission, volume, probe, and lifecycle actions. Resource status shows desired and observed state. Metrics show magnitude and timing. No one source is always sufficient.
+
+2. Essential commands
+
+oc project payments-test
+oc get pods
+oc describe pod/<pod-name>
+oc logs pod/<pod-name> -c <container> --since=20m
+oc logs pod/<pod-name> -c <container> --previous
+oc get events --sort-by=.lastTimestamp
+oc get events --field-selector involvedObject.name=<pod-name> --sort-by=.lastTimestamp
+oc get deployment/<name> -o wide
+oc rollout status deployment/<name>
+oc get endpointslices -l kubernetes.io/service-name=<service-name>
+oc auth can-i get secrets
+
+Use `--previous` after a restart to retrieve the prior container's log when it is still retained. It does not recover logs permanently lost to rotation or deletion. Cluster logging retention and access policy are administrative decisions.
+
+3. A debugging sequence that avoids guesswork
+
+1. State the symptom, affected environment, start time, and user impact.
+2. Identify the workload and its current revision.
+3. Inspect status and events before assuming an application defect.
+4. Identify the exact pod and container; multi-container pods need `-c`.
+5. Read the first relevant error and surrounding context, not only a matching word search.
+6. Check configuration, identities, dependencies, and resource signals that could explain it.
+7. Form one falsifiable hypothesis. Apply one authorised correction.
+8. Verify user-facing recovery and record the evidence.
+
+4. Event patterns
+
+`FailedScheduling` suggests capacity, affinity, taints, quota, or claims. `FailedMount` suggests a volume, Secret, ConfigMap, or CSI problem. `ErrImagePull` or `ImagePullBackOff` suggests image name, registry reachability, pull credentials, or policy. Probe warnings may mean an application slow start, wrong path/port, TLS mismatch, or an overloaded dependency. Events are ephemeral; capture relevant messages while available.
+
+5. Real-time scenario: pod is Pending after a release
+
+The `invoice-worker` deployment has desired replicas 2, available replicas 0. An engineer starts reading application logs, but there are no running containers.
+
+Correct first checks:
+
+oc get pods -l app=invoice-worker
+oc describe pod/<pending-pod>
+oc get events --sort-by=.lastTimestamp
+oc describe quota
+
+The event states `FailedScheduling` because namespace CPU quota is exhausted. The safe correction is not to delete an unrelated workload. Confirm the quota owner and capacity policy, remove only approved stale resources or request/adjust capacity through the agreed process, then observe scheduling and worker queue recovery.
+
+6. Debug containers and ephemeral access
+
+Where cluster policy permits, `oc debug` can start a diagnostic pod or attach a debug container. It is powerful and therefore controlled. Prefer read-only checks first; never use it as a route around RBAC, security policy, change control, or data-handling rules.
+
+Examples:
+
+oc debug node/<node-name>
+oc debug pod/<pod-name>
+
+The resulting shell and tools depend on cluster configuration. Do not copy binaries, tokens, or customer data from a production environment. Exit cleanly and remove only resources you created when policy permits.
+
+7. Log hygiene
+
+- Never log passwords, access tokens, session IDs, full payment data, or unredacted personal data.
+- Use correlation IDs that are safe to share and avoid making them unbounded metric labels.
+- Record timestamps in a consistent timezone, preferably UTC.
+- Set log retention, forwarding, and access controls appropriate to the data classification.
+- In an incident, redact before sharing extracts outside the authorised group.
+
+8. Debug decision table
+
+No pod exists: inspect deployment, ReplicaSet, admission, events.
+Pod Pending: inspect events, quota, PVCs, scheduler conditions.
+Pod crashes: inspect termination reason and `--previous` logs.
+Pod Ready but requests fail: inspect service/endpoints, route, logs, dependency health, NetworkPolicy, and application metrics.
+Access denied: identify the ServiceAccount/user, target API, verb, resource, and namespace; validate with authorised `oc auth can-i` checks.
+
+Knowledge check
+
+- Why might `oc logs` return nothing for a Pending pod?
+- When is `--previous` useful?
+- Which event class is often more useful than logs for an unbound PVC?
+- Why is a debug shell not the first troubleshooting action?
+
+Summary
+
+Good troubleshooting narrows the failure domain before altering state. Logs explain application behaviour; events explain platform behaviour; status and CLI inspection connect them to the intended deployment.

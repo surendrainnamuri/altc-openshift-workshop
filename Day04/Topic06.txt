@@ -1,0 +1,84 @@
+DEVELOPER TOOLING AND LOCAL INTEGRATION OPTIONS
+
+Workshop objective
+You should be able to choose a local development workflow that preserves production parity where it matters, connect tools to OpenShift safely, and know when local convenience becomes a security or reproducibility risk.
+
+1. Local development is not a second production
+
+Developers need fast feedback, debugging, tests, and realistic integration points. A laptop cannot reproduce every cluster characteristic: OpenShift security constraints, ingress, service mesh, storage, quotas, RBAC, node topology, and managed dependencies may differ. Use local tools to shorten feedback loops, then validate in a controlled integration environment.
+
+2. Core tool choices
+
+- `oc`: OpenShift CLI for authenticated cluster inspection and resource workflows.
+- `kubectl`: Kubernetes CLI; useful where commands are portable, but OpenShift-specific features use `oc`.
+- `odo`: developer-focused workflows where installed and supported by the team.
+- Podman/containers: build and run images locally without assuming Docker daemon behaviour.
+- IDE extensions: YAML schema assistance, Kubernetes/OpenShift views, log access, and debug configuration. Review their credential handling.
+- `oc port-forward`: temporary local access to an authorised in-cluster service.
+- Local Kubernetes/OpenShift variants: useful for learning and isolated tests, not proof that a production deployment is valid.
+
+3. Safe cluster connection
+
+Use an approved login method and endpoint. Avoid sharing kubeconfig files, copying bearer tokens into chat, or keeping broad tokens on unmanaged devices. Check context before every operation:
+
+oc whoami
+oc whoami --show-server
+oc project
+oc get projects
+
+Use separate contexts for development, test, and production. A clear prompt and least privilege reduce accidental changes to the wrong cluster.
+
+4. Local-to-cluster integration patterns
+
+Port-forward for a short, authorised diagnostic path:
+
+oc port-forward service/catalog-api 8080:8080
+
+Then test `http://localhost:8080` from the same machine. This does not expose a service to teammates or reproduce an external Route, TLS termination, NetworkPolicy, or load balancer path.
+
+Remote debugging or sync tools can accelerate diagnosis, but treat them as privileged access. Limit scope and duration, use non-production first, and ensure debug configuration cannot expose environment variables, tokens, or customer data.
+
+5. Real-time scenario: works on laptop, fails in OpenShift
+
+An image starts locally as root and writes a cache under `/var/cache/app`. In OpenShift, the pod fails because the platform runs the image with an arbitrary non-root UID and the directory is not writable.
+
+Evidence and correction:
+
+1. Inspect the pod event and termination logs.
+2. Reproduce locally using a non-root user where possible.
+3. Change the image so application directories are group-writable by the expected runtime group or use a writable mounted location, without weakening security context.
+4. Rebuild with an immutable tag/digest and test in a sandbox project.
+5. Validate that no `runAsUser: 0` exception or overbroad SCC was added merely to pass the test.
+
+This is production parity in the right place: image ownership and arbitrary-UID compatibility.
+
+6. Configuration and secrets locally
+
+Use development-only values and a secret manager or approved local mechanism. Never commit `.env` files with real credentials, export production Secret values into a terminal transcript, or make production databases reachable from a casual local environment. If an integration needs sensitive data, use a masked, approved sandbox and an explicit access path.
+
+7. A practical inner-loop model
+
+1. Lint, unit test, and dependency scan locally.
+2. Build a reproducible image and test it as non-root.
+3. Deploy the same image to a personal or shared sandbox project through reviewed manifests.
+4. Run contract/integration tests against approved services.
+5. Promote the recorded immutable artifact through CI/CD; do not rebuild a different image on the release path.
+
+8. Tooling decision questions
+
+- Does this tool store credentials, and where?
+- Does it reproduce the relevant OpenShift constraint or hide it?
+- Can its operation be repeated by CI and another developer?
+- What project, namespace, network, and data can it reach?
+- How will its temporary access be stopped and audited?
+
+Knowledge check
+
+- What does `oc port-forward` prove and not prove?
+- Why is an image that runs as root locally a possible OpenShift issue?
+- Which test belongs locally, and which needs a sandbox project?
+- Why should release promotion use the same image digest built earlier?
+
+Summary
+
+Developer tooling should make feedback fast without creating a shadow production environment. Use local tests for speed, sandbox clusters for integration and platform behaviour, and immutable artifacts to connect the two.

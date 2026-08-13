@@ -1,0 +1,97 @@
+RESOURCE MONITORING AND METRICS OVERVIEW
+
+Workshop objective
+By the end of this topic, you should be able to explain the difference between resource telemetry and application health, inspect current CPU and memory use, recognise capacity and throttling signals, and turn an observed metric into a safe operational decision.
+
+1. Why monitoring starts with a question
+
+Metrics are numeric observations over time. They answer questions such as "is demand rising?", "which workload consumes the namespace quota?", and "did latency rise at the same time as CPU throttling?" They are not a substitute for a hypothesis, an SLO, or a causal investigation.
+
+Use three layers together:
+
+- Resource metrics: CPU, memory, storage, network, pod count, quota, node capacity.
+- Workload health: readiness, restarts, replica availability, request rate, error rate, latency.
+- Business signals: completed orders, payment failures, queue age, customer impact.
+
+A pod can be Running while its service is unavailable; it can also be Ready while it is consuming unsustainable resources. The operator's job is to correlate layers before changing anything.
+
+2. CPU and memory are different risks
+
+CPU is compressible. When a container reaches a CPU limit it is normally throttled: it gets less CPU time, often increasing request latency. Memory is not compressible. When a container exceeds its memory limit, the kernel can terminate it and Kubernetes reports an OOMKilled restart.
+
+Requests influence scheduling and quota accounting. Limits constrain a container at runtime. A high limit with a tiny request can make a workload schedule easily but still create node-level contention; a limit without a realistic request makes capacity planning weak. Do not set values merely to silence alerts.
+
+3. Live inspection commands
+
+Select the correct project first. Substitute names that exist in your cluster.
+
+oc project payments-test
+oc adm top pods
+oc adm top pod orders-api-7f6c8d9f5c-x2m8p --containers
+oc adm top nodes
+oc get resourcequota,limitrange
+oc describe quota
+oc get pods -o custom-columns=NAME:.metadata.name,READY:.status.containerStatuses[*].ready,RESTARTS:.status.containerStatuses[*].restartCount
+oc describe pod orders-api-7f6c8d9f5c-x2m8p
+
+`oc adm top` depends on a metrics service and is a current snapshot, not a history. If it reports no metrics, verify the platform capability with the cluster administrator; do not assume the application is idle.
+
+4. Reading the workload declaration
+
+Inspect the intended resources as well as current use:
+
+oc get deployment/orders-api -o yaml
+oc describe deployment/orders-api
+
+Look at `resources.requests` and `resources.limits` for every container, including sidecars. A proxy, logging sidecar, init container, or build pod can be the actual consumer. Compare configured values to a representative busy period, not a single quiet sample.
+
+5. Capacity signals worth acting on
+
+- Increasing restarts or OOMKilled: investigate memory profile, concurrency, cache size, and limit before increasing replicas.
+- High CPU with rising latency: inspect throttling, traffic, autoscaling settings, downstream waits, and request queues.
+- Pending pods: inspect events for quota, insufficient CPU/memory, PVC binding, node selectors, taints, or admission policy.
+- Quota near hard limit: prioritise, reclaim safely, or request capacity; deleting evidence or production pods is not capacity management.
+- Node pressure: escalate through the platform process. Application teams should not modify shared-node settings without authority.
+
+6. Real-time scenario: the lunch-hour slowdown
+
+At 12:05, the checkout page becomes slow. The `orders-api` deployment is Ready with three replicas. A responder sees 85-95% CPU use in each application container, no restarts, and a latency alert at the same time. The team has two tempting but incomplete actions: raise the memory limit or restart every pod.
+
+Evidence-first response:
+
+1. Record the time window, namespace, deployment revision, request rate, p95 latency, error rate, CPU, and restart count.
+2. Confirm whether traffic rose, whether CPU requests/limits are causing throttling, and whether a dependency is slow.
+3. Inspect HPA state if present: `oc get hpa; oc describe hpa/orders-api`.
+4. Determine whether replicas can be added within quota and whether the service has a safe scaling test.
+5. Make one approved change, such as raising a tested CPU request/limit or scaling through the declared autoscaling policy.
+6. Prove recovery with latency, error rate, saturation, and sustained behaviour after the change.
+
+The likely conclusion is not "CPU high means add memory." CPU saturation and memory exhaustion need different remedies.
+
+7. Monitoring design principles
+
+- Alert on symptoms users experience and on the saturation that predicts them.
+- Use a time window and a baseline; a single high value can be normal during startup.
+- Add labels that help ownership: application, component, environment, and service tier. Avoid customer data, secrets, commit-sized unbounded labels, and request IDs as metric labels.
+- Define an owner, runbook, severity, and recovery signal for each actionable alert.
+- Test dashboards and alert paths during normal operations, not only during an outage.
+
+8. Safe escalation statement
+
+"From 12:05 to 12:17 UTC, orders-api p95 latency rose from 180 ms to 2.8 s while all three pods were CPU-saturated and Ready. No OOM restarts occurred. Quota allows two additional replicas; dependency latency is still being checked. We recommend the approved HPA scale test and will validate p95 latency, 5xx rate, and CPU saturation for 15 minutes."
+
+Knowledge check
+
+- Why does a memory limit breach differ from a CPU limit breach?
+- What does a request influence, and what does a limit influence?
+- Why is a Ready pod not proof of acceptable service performance?
+- Which evidence would you collect before changing replicas?
+
+Summary
+
+Resource monitoring connects workload demand to scheduling, runtime behaviour, and user impact. Treat a metric as evidence, correlate it with logs/events and service signals, then make the smallest safe, observable change.
+
+References
+
+- OpenShift Monitoring documentation: https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/monitoring/
+- Kubernetes resource management: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/

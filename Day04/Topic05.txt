@@ -1,0 +1,85 @@
+USER ROLES AND PROJECT ACCESS CONTROL
+
+Workshop objective
+You should be able to describe OpenShift RBAC concepts, inspect effective project permissions, grant the smallest suitable role through an approved process, and explain why a role binding is not a substitute for workload identity or secret governance.
+
+1. RBAC model
+
+Role and ClusterRole define allowed API actions. RoleBinding grants a Role or ClusterRole in one namespace/project. ClusterRoleBinding grants across the cluster and should be exceptional. Subjects are users, groups, or ServiceAccounts. Permissions are verb + API group + resource + scope; a friendly role name alone does not explain the risk.
+
+Projects provide a practical tenancy boundary but do not automatically solve network isolation, secret classification, image trust, quota, or audit requirements.
+
+2. Human and workload access differ
+
+A human user's access supports administration or development. A ServiceAccount supplies an in-cluster workload identity. Do not give a deployment the same broad rights as a platform administrator, and do not share a personal token with automation. Use separate named identities so activity is attributable and revocable.
+
+3. Inspect before grant
+
+oc project payments-test
+oc get rolebindings,clusterrolebindings
+oc describe rolebinding/<binding-name>
+oc get role,rolebinding -o yaml
+oc auth can-i get deployments
+oc auth can-i create pods
+oc auth can-i get secrets
+
+Authorised administrators can assess another subject with impersonation syntax, for example `oc auth can-i get deployments --as=<user> -n payments-test`. Treat impersonation as a controlled audit feature; permissions and audit requirements vary.
+
+4. Common project roles
+
+`view` is generally read-oriented but may expose metadata and log access that remains sensitive. `edit` commonly permits mutation of many namespaced resources and can be too broad for an observer. `admin` controls broad project administration. Exact permissions can change with cluster version and custom policy; inspect the installed role instead of relying on a role name from another cluster.
+
+5. Real-time scenario: contractor needs release visibility
+
+A release analyst needs to inspect `orders-api` rollout status and logs for seven days. They do not need to deploy, read Secrets, or access other projects.
+
+Good access decision:
+
+1. Confirm identity, project, business purpose, expiry, and data classification.
+2. Start from the smallest read-oriented project role or create a narrowly scoped Role if log/status access needs tailoring.
+3. Bind the authorised group rather than a shared account where possible.
+4. Validate the effective permissions with authorised checks.
+5. Record approver and expiry; remove access when the assignment ends.
+
+Do not grant `cluster-admin` to solve a Console visibility issue. Diagnose whether the missing view needs a namespace permission, a monitoring role, a plugin entitlement, or administrative support.
+
+6. Secret access is high impact
+
+Anyone who can read a Secret can often impersonate an external system or decode sensitive configuration. Do not place Secrets in ConfigMaps, Templates, command lines, labels, annotations, or logs. Restrict create/update as well as read: an attacker who can replace a credential can redirect or disrupt a workload.
+
+7. Practical commands
+
+Create a binding only when approved, using a named group:
+
+oc adm policy add-role-to-group view release-observers -n payments-test
+
+Remove only the intended binding when access expires:
+
+oc adm policy remove-role-from-group view release-observers -n payments-test
+
+List project subjects:
+
+oc describe project payments-test
+oc get rolebinding -o custom-columns=NAME:.metadata.name,ROLE:.roleRef.name,SUBJECTS:.subjects[*].name
+
+The exact administrative command availability and policy can differ; use your organisation's identity and access workflow as the authority.
+
+8. Access review checklist
+
+- Named owner, purpose, project, role, subject, approver, and expiry exist.
+- Role is namespace-scoped unless cluster scope is demonstrably required.
+- Human and ServiceAccount roles are separate.
+- Secret, exec, port-forward, build, and deployment rights receive explicit scrutiny.
+- Departed users, unused groups, and stale automation identities are reviewed and removed.
+- Audit logs and identity-provider records can attribute changes.
+
+Knowledge check
+
+- What is the difference between a RoleBinding and a ClusterRoleBinding?
+- Why can `view` still require a data-access review?
+- Why should CI and human access use different identities?
+- What evidence would support granting a seven-day observer role?
+
+Summary
+
+Access control is an operational safety control. Make permissions explicit, narrow, attributable, time-bound, and continuously reviewed.

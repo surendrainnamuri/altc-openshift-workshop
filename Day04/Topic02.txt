@@ -1,0 +1,77 @@
+USING THE WEB CONSOLE FOR PERFORMANCE INSIGHTS
+
+Workshop objective
+You should be able to use the OpenShift Web Console to move from a service symptom to the relevant workload, pod, resource view, events, and logs without treating dashboard colours as proof of root cause.
+
+1. Choose the right perspective
+
+The Developer perspective is useful for application topology, workloads, routes, builds, pipelines, and quick troubleshooting. The Administrator perspective exposes project administration, quotas, cluster resources, Operators, and monitoring views according to your permissions. The exact navigation labels vary by OpenShift version and installed console plugins; follow the evidence, not a memorised click path.
+
+2. A repeatable console investigation
+
+Start in the correct project. Find the affected application in Topology or Workloads, then open the deployment. Check:
+
+- desired versus available replicas and rollout revision;
+- Conditions, pod readiness, restart counts, and recent events;
+- resource requests and limits in the workload definition;
+- pod Metrics for CPU and memory over the selected period;
+- Logs for the affected container and time window;
+- Monitoring query or dashboard panels for request, error, latency, and saturation signals.
+
+The Console is a view over cluster state. Use the YAML tab and CLI to preserve precise evidence and reproduce a finding.
+
+3. Reading charts responsibly
+
+Set a time range that contains both the normal baseline and the incident. A five-minute view can hide a morning trend; a 24-hour view can hide a short deployment regression. Align the timestamps of rollout, alert, traffic change, CPU increase, errors, and restarts.
+
+Ask: Is the chart showing an average, a maximum, a rate, or a cumulative counter? Is the line per pod, per container, or aggregated? Is a missing line zero traffic, a selector mismatch, a permissions issue, or an unavailable metric source?
+
+4. Live exercise: trace a regression after a rollout
+
+Scenario: At 14:20 a new `catalog-api` revision is rolled out. At 14:24, p95 latency increases and 5xx responses appear. The topology badge remains green.
+
+In the Console:
+
+1. Open the deployment and confirm rollout timestamp, revision, and image reference.
+2. Open Pods and compare restarts, readiness, and CPU/memory among old and new pods if both remain.
+3. Open the new pod's Logs and filter to the incident window; do not paste credentials or request payloads into tickets.
+4. Open Events to check image pull, probes, admission, volume mount, or scheduling messages.
+5. Open Monitoring and compare request/error/latency signals with container CPU and memory.
+6. Inspect the route/service endpoints and only then consider a rollback under the team's change procedure.
+
+Interpretation: green topology indicates Kubernetes believes the objects meet basic status conditions. It does not prove an API response is semantically correct, fast, authorised, or connected to every dependency.
+
+5. Saved views and shareable evidence
+
+Before closing the incident, capture the namespace, resource name, time range, query name, rollout revision, and a concise finding. Share a durable URL only if it does not disclose sensitive cluster details and the recipients have legitimate access. Screenshots are useful context but are not a replacement for the actual query, log line, event, or manifest revision.
+
+6. Common console mistakes
+
+- Looking at the wrong project or environment.
+- Reading only the latest log line rather than the first relevant failure.
+- Confusing a deployment's desired replicas with available replicas.
+- Using a graph without checking its unit and aggregation.
+- Editing YAML live to experiment without a change record or Git source of truth.
+- Assuming an absent menu item means a feature is unsupported; RBAC, Console plugins, and cluster configuration also control visibility.
+
+7. Pair the Console with CLI
+
+When the Console reveals a suspect pod, pivot to reproducible commands:
+
+oc describe pod/<pod-name>
+oc logs pod/<pod-name> -c <container> --since=30m
+oc get events --sort-by=.lastTimestamp
+oc get deployment/<name> -o yaml
+
+Use Console navigation to orient yourself and CLI/YAML to collect exact, repeatable facts. Do not alter a live resource simply because an Edit YAML button is available.
+
+Knowledge check
+
+- What does a green topology badge prove, and what does it not prove?
+- Which time range would you choose for a 14:24 regression and why?
+- Which views help distinguish a probe failure from an application error?
+- Why should a responder record the graph's aggregation and selector?
+
+Summary
+
+The Web Console is an efficient investigation surface when used with disciplined time correlation. Start at the user symptom, traverse workload and pod state, then validate the theory with metrics, events, logs, and the declared configuration.

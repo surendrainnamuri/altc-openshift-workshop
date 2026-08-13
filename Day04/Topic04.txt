@@ -1,0 +1,72 @@
+INTRODUCTION TO TEMPLATES AND DEPLOYMENT AUTOMATION
+
+Workshop objective
+You should be able to explain declarative deployment automation, render and review an OpenShift Template safely, distinguish a Template from newer GitOps-style workflows, and identify the controls that make repeatable delivery safe.
+
+1. Declarative intent and repeatability
+
+A deployment definition states the desired resources: Deployment, Service, Route, ConfigMap, Secret reference, ServiceAccount, NetworkPolicy, and resource settings. Automation applies a reviewed version of that intent consistently. The goal is not merely speed; it is reproducibility, auditability, and safe promotion.
+
+An OpenShift Template packages parameterised Kubernetes/OpenShift objects. Processing substitutes parameters and produces ordinary API objects. Once created, those objects are managed as normal resources; changing the template file alone does not update them.
+
+2. Template anatomy
+
+Typical fields are `apiVersion: template.openshift.io/v1`, `kind: Template`, metadata, parameters, optional labels, and `objects`. Parameters should describe safe configuration such as application name, image reference, replica count, or environment-specific hostname. Do not make Secrets literal parameter values: they can surface in shell history, processed output, Git, or logs.
+
+3. Inspect before creating
+
+Never pipe an unreviewed template straight into creation in a production project. First render and inspect it:
+
+oc process -f app-template.yaml -p NAME=catalog -p IMAGE=registry.example/cat@sha256:<digest> > rendered.yaml
+oc apply --dry-run=client -f rendered.yaml -o yaml
+oc diff -f rendered.yaml
+oc create -f rendered.yaml
+
+Use `oc apply` rather than `oc create` only when its ownership and lifecycle semantics match the team's process. `oc diff` needs appropriate server access and does not replace peer review or policy checks.
+
+4. A minimal safe pattern
+
+Parameterise an immutable image digest, namespace-safe names, non-secret configuration references, and resource values that have been tested. Declare probes, limits/requests, labels, and ownership. Keep environment-specific differences small and explicit. Store definitions in version control, review changes, and make the rendered result available as release evidence.
+
+5. Real-world scenario: configuration drift
+
+The test environment was created from a template six months ago. Production has an extra NetworkPolicy and a different readiness path edited through the Console during an incident. A new release works in test but fails in production.
+
+Investigation:
+
+1. Export and normalise relevant manifests from both environments.
+2. Compare desired Git definitions with the live objects; ignore server-generated fields.
+3. Identify whether differences are intentional, emergency changes, or accidental drift.
+4. Put the accepted production configuration under review in the source of truth.
+5. Test the reconciled definition in a lower environment, then promote through the approved process.
+
+The prevention is not "never fix production." It is to capture an approved emergency change promptly so desired state does not become fiction.
+
+6. Templates, Helm, Kustomize, and GitOps
+
+Templates are OpenShift-native parameterised object bundles. Helm packages chart templates and release values. Kustomize applies overlays/patches to a base. GitOps tools continuously reconcile a declared Git state to clusters. They solve overlapping but not identical problems. Choose one clear ownership model per resource to avoid two automation systems fighting each other.
+
+7. Deployment automation controls
+
+- Build once and deploy the same image digest through environments.
+- Review source changes and generated manifests.
+- Validate schema, policies, and security context before promotion.
+- Separate CI build credentials from environment deployment credentials.
+- Use rollout status and application smoke tests as evidence.
+- Define rollback or forward-fix decisions before a high-risk change.
+- Record the revision, digest, parameters (excluding secrets), actor, and target environment.
+
+8. Lab prompt
+
+Create a harmless Template for a `hello-operations` service in a sandbox project. Include a Deployment, Service, route only if allowed, resource requests/limits, readiness probe, and labels. Render it with an immutable image reference. Review the generated objects before applying. Then change only the replica parameter, render a second version, and explain the observed diff.
+
+Knowledge check
+
+- What happens to existing resources when a Template file is edited?
+- Why should a release use an image digest rather than `latest`?
+- What is the risk of two reconcilers owning the same Deployment?
+- Which values should not be passed as Template parameters?
+
+Summary
+
+Templates make common deployments repeatable, but safe automation depends on review, immutable inputs, least privilege, validation, and a clear source of truth.

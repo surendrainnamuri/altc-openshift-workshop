@@ -1,0 +1,154 @@
+REFLECTION & REVIEW - OPERATIONS, ACCESS, AND DELIVERY DISCUSSION
+
+Purpose
+
+This review consolidates Day04 into one operational story. Work individually or in groups of two or three. The aim is to practise evidence-first decisions: observe, correlate, make one safe change, verify recovery, and improve the system.
+
+Recommended duration: 60-90 minutes
+
+======================================================================
+PART 1 - TRACE THE INCIDENT
+======================================================================
+
+Scenario
+
+At 12:05 UTC, customers report slow checkout. `orders-api` is Ready, but p95 latency rises from 180 ms to 2.8 s and some requests time out. A deployment occurred at 11:50. One team member suggests restarting all pods; another suggests doubling every limit.
+
+Create an investigation timeline. For each item, state what it can prove and what it cannot prove:
+
+1. Deployment revision and image digest
+2. Pod readiness and restart count
+3. CPU/memory metrics
+4. Request rate, error rate, and latency graph
+5. Pod events
+6. Application logs
+7. HPA and quota status
+
+Response template
+
+Symptom:
+Time window:
+User impact:
+First evidence:
+Hypothesis:
+One authorised corrective action:
+Recovery proof:
+Preventive improvement:
+
+======================================================================
+PART 2 - LIVE CONSOLE AND CLI WALKTHROUGH
+======================================================================
+
+In a sandbox project, choose a deployment and complete the following without changing it:
+
+- Find its desired and available replicas in the Web Console.
+- Record the active rollout revision and container image reference.
+- Open one pod's Metrics and select a time range that contains a baseline.
+- Open Logs and Events for that pod.
+- Reproduce the main observations with:
+
+oc describe deployment/<name>
+oc get pods -l app=<label>
+oc describe pod/<pod-name>
+oc logs pod/<pod-name> -c <container> --since=30m
+oc get events --sort-by=.lastTimestamp
+oc adm top pod <pod-name> --containers
+
+Discussion: Which result was more precise in CLI? Which relationship was easier to see in the Console? Did permissions or configuration hide any view?
+
+======================================================================
+PART 3 - FAILURE DOMAIN CARDS
+======================================================================
+
+For each card, name the likely first evidence source, the first safe command, and a correction that would be unsafe.
+
+A. Pod remains Pending after a release.
+B. Pod restarts with OOMKilled.
+C. Route returns 503 while pods are Ready.
+D. Image pull fails after a registry credential rotation.
+E. A contractor cannot see project logs.
+F. A template change works in test but not production.
+
+Suggested themes
+
+A: events, quota, PVCs, scheduling; do not delete unrelated workloads.
+B: termination state, previous logs, memory profile; do not blindly increase all limits.
+C: service endpoints, route, readiness, network, application dependency; do not assume Ready proves request success.
+D: events and image pull identity; do not paste registry tokens into a ticket.
+E: RBAC and data classification; do not grant cluster-admin.
+F: rendered manifests and drift comparison; do not edit production repeatedly until it works.
+
+======================================================================
+PART 4 - DEPLOYMENT AUTOMATION REVIEW
+======================================================================
+
+Review a Template, Helm chart, Kustomize overlay, or GitOps definition used by your organisation. Answer:
+
+- What is the declared source of truth?
+- How are environment differences represented?
+- Is the deployed image immutable and recorded by digest?
+- Which resources have more than one possible reconciler?
+- Are Secrets referenced safely rather than rendered into logs or source?
+- What schema, policy, and smoke-test checks happen before promotion?
+- How is emergency production drift captured back into reviewed desired state?
+
+Write one improvement with an owner and due date.
+
+======================================================================
+PART 5 - ACCESS REVIEW
+======================================================================
+
+For each subject below, propose the minimum project access, scope, duration, and validation approach:
+
+1. A release observer who needs deployment and log visibility for one week.
+2. A CI pipeline that pushes an image but never deploys it.
+3. A deployment automation identity for one production namespace.
+4. An on-call responder who needs emergency diagnostic access.
+
+For every proposal explain:
+
+- Why a human or ServiceAccount identity is appropriate.
+- Why the role is namespace- or cluster-scoped.
+- Whether Secret, exec, port-forward, or mutation permissions are needed.
+- Who approves, audits, and removes the access.
+
+======================================================================
+PART 6 - LOCAL TOOLING DESIGN
+======================================================================
+
+Your service works locally but fails in OpenShift because it writes to a root-owned directory. Design the fastest safe feedback loop.
+
+Include:
+
+- local non-root image test;
+- a sandbox project deployment of the same immutable image;
+- the pod event/log evidence you would collect;
+- the image change you would make;
+- why changing the workload to root is a poor default;
+- how developers can use temporary port-forward access without exposing the service broadly.
+
+======================================================================
+PART 7 - OPERATIONAL BEST PRACTICES DISCUSSION
+======================================================================
+
+Agree a team position on these practices:
+
+- Every alert has an owner, severity, runbook, and recovery signal.
+- A dashboard is evidence only when its query, labels, unit, aggregation, and time range are understood.
+- Logs and events are collected with data minimisation and retention controls.
+- Production changes use reviewed declarative definitions and immutable images.
+- Access is least-privilege, attributable, time-bound, and reviewed.
+- Local tools accelerate feedback but do not bypass cluster controls or production data safeguards.
+- After every incident, the team captures the corrective change and one prevention action.
+
+Final reflection
+
+Write three sentences:
+
+1. The operational signal I will check before changing a workload is __________.
+2. The access-control shortcut I will avoid is ____________________________.
+3. The automation improvement I can apply to a real service is ____________.
+
+Summary
+
+Operational maturity comes from repeatable observation and controlled change. The strongest teams connect metrics, logs, events, configuration, access, and delivery evidence into one clear decision trail.
